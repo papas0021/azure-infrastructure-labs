@@ -1,0 +1,407 @@
+# Lab 07 — Azure Storage
+
+## Objective
+
+Learn how to securely use Azure Storage from a private Azure network.
+
+### Goals
+
+* Create and use Blob Storage
+* Configure Private Endpoint
+* Configure Private DNS
+* Use Managed Identity + RBAC
+* Understand Blob access tiers
+* Configure Lifecycle Management
+* Understand Azure Files and its use cases
+
+---
+
+## Architecture
+
+```text
+                    Azure
+┌─────────────────────────────────────────────┐
+│                                             │
+│  Storage Account                            │
+│  lab07storage867660b2                       │
+│                                             │
+│  ┌──────────────┐      ┌──────────────┐     │
+│  │ Blob Storage │      │ Azure Files  │     │
+│  │ web-logs/    │      │ iis-logs     │     │
+│  │ test.log     │      │              │     │
+│  └──────┬───────┘      └──────┬───────┘     │
+│         │                      │             │
+│    Private Endpoint       Private Endpoint  │
+│      10.0.2.4                10.0.2.5        │
+│         │                      │             │
+│         └──────────┬───────────┘             │
+│                    │                         │
+│                 lab07-vnet                   │
+│                    │                         │
+│                 VM 10.0.1.4                  │
+│                                             │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Storage Account
+
+* Name: `lab07storage867660b2`
+* Type: StorageV2
+* Performance: Standard
+* Replication: LRS
+* Default access tier: Hot
+* Public Network Access: Disabled
+* Blob public access: Disabled
+* HTTPS only: Enabled
+
+---
+
+## Blob Storage
+
+Created container:
+
+```text
+web-logs
+```
+
+Created and uploaded:
+
+```text
+web-logs/test.log
+```
+
+The VM created a normal Linux file:
+
+```text
+/tmp/test.log
+```
+
+and uploaded it to Blob Storage.
+
+Important:
+
+> RBAC does not create the file. RBAC authorizes the VM's identity to perform Blob data operations.
+
+---
+
+## Private Endpoint + Private DNS
+
+### Blob
+
+Private Endpoint:
+
+```text
+10.0.2.4
+```
+
+Private DNS Zone:
+
+```text
+privatelink.blob.core.windows.net
+```
+
+Verified:
+
+```text
+lab07storage867660b2.blob.core.windows.net
+        ↓
+10.0.2.4
+```
+
+### Azure Files
+
+Private Endpoint:
+
+```text
+10.0.2.5
+```
+
+Private DNS Zone:
+
+```text
+privatelink.file.core.windows.net
+```
+
+Verified:
+
+```text
+lab07storage867660b2.file.core.windows.net
+        ↓
+10.0.2.5
+```
+
+### Key concept
+
+Private Endpoint and Private DNS have different roles.
+
+```text
+Private Endpoint
+= Private network path
+
+Private DNS
+= Name resolution to the private IP
+```
+
+---
+
+## Managed Identity + RBAC
+
+Assigned a System-assigned Managed Identity to the VM.
+
+The VM's identity was given:
+
+```text
+Storage Blob Data Contributor
+```
+
+at the Storage Account scope.
+
+Concept:
+
+```text
+Managed Identity
+    ↓
+Authentication
+    ↓
+Access Token
+    ↓
+RBAC
+    ↓
+Authorization
+    ↓
+Blob access
+```
+
+Important distinction:
+
+```text
+Authentication = Who are you?
+
+Authorization = What are you allowed to do?
+```
+
+---
+
+## Blob Access Tier
+
+Initial Blob tier:
+
+```text
+Hot
+```
+
+Manually changed:
+
+```text
+Hot → Cool
+```
+
+Verified with the Blob response:
+
+```text
+x-ms-access-tier: Cool
+```
+
+Important:
+
+> Changing one Blob's tier does not change the Storage Account's default tier.
+
+---
+
+## Lifecycle Management
+
+Configured:
+
+```text
+Target:
+web-logs/
+
+Blob type:
+Block Blob
+
+Condition:
+More than 30 days since modification
+
+Action:
+Hot → Cool
+```
+
+Purpose:
+
+> Automatically move older logs to a lower-cost access tier.
+
+Lifecycle Management is different from manually changing a Blob's tier.
+
+---
+
+## Azure Files
+
+Created:
+
+```text
+iis-logs
+```
+
+Azure Files is suitable for:
+
+* SMB file shares
+* Shared folders
+* Applications that expect a traditional file system
+* Windows/Linux file-share scenarios
+
+Difference:
+
+```text
+Blob Storage
+= Object Storage
+
+Azure Files
+= Managed File Share
+```
+
+The SMB mount was **not required for this lab**.
+
+---
+
+## Troubleshooting Lessons
+
+### 1. Azure Policy / Region
+
+Private Endpoint creation initially failed due to the subscription's allowed resource deployment regions.
+
+Using the explicitly allowed region:
+
+```text
+northcentralus
+```
+
+resolved the deployment issue.
+
+---
+
+### 2. Cloud Shell Variables
+
+Cloud Shell sessions can expire.
+
+Example:
+
+```text
+STORAGE_ID
+```
+
+was lost and had to be recreated.
+
+Lesson:
+
+> Azure resources persist, but shell variables do not necessarily persist across Cloud Shell sessions.
+
+---
+
+### 3. Management Plane vs Data Plane
+
+Azure CLI management operations such as:
+
+```text
+az storage account show
+```
+
+could work from Cloud Shell.
+
+Direct Blob data-plane access was blocked because Public Network Access was disabled.
+
+Lesson:
+
+> Management Plane access and Data Plane access are different.
+
+---
+
+### 4. DNS Troubleshooting
+
+Before Private DNS:
+
+```text
+Storage FQDN
+    ↓
+Public IP
+```
+
+After Private DNS:
+
+```text
+Storage FQDN
+    ↓
+Private Endpoint IP
+```
+
+Azure Files initially returned:
+
+```text
+NXDOMAIN
+```
+
+because the Private DNS Zone Group had not yet been configured.
+
+---
+
+### 5. REST API Troubleshooting
+
+Incorrect HTTP method:
+
+```text
+SET
+```
+
+resulted in:
+
+```text
+400 InvalidHttpVerb
+```
+
+Correct method:
+
+```text
+PUT
+```
+
+Then:
+
+```text
+411 Length Required
+```
+
+was resolved by adding:
+
+```text
+Content-Length: 0
+```
+
+The final request returned:
+
+```text
+200 OK
+```
+
+---
+
+## Key Takeaways
+
+1. Private Endpoint provides a private network path.
+2. Private DNS makes the normal Azure service hostname resolve to the private IP.
+3. Managed Identity provides the VM's Azure identity.
+4. RBAC controls what that identity can do.
+5. Blob Storage is object storage.
+6. Azure Files is a managed file share.
+7. Hot/Cool/Archive are access tiers with different cost/access characteristics.
+8. Lifecycle Management automates storage-tier transitions.
+9. Management Plane and Data Plane are different.
+10. Troubleshooting should separate DNS, network connectivity, authentication, and authorization.
+
+## Lab Status
+
+**Completed**
+
+Lab 07 technical objectives were achieved.
+
+No Azure Files SMB mounting was required because it was outside the original lab scope.
