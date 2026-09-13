@@ -181,6 +181,11 @@ Authentication = Who are you?
 
 Authorization = What are you allowed to do?
 ```
+az role assignment create \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$STORAGE_ID"
 
 ---
 
