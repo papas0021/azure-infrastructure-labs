@@ -1,412 +1,1625 @@
-# Lab 07 — Azure Storage
+# Lab 07 - Azure Storage / Private Endpoint / Managed Identity
 
-## Objective
+I completed Lab 07 by creating an Azure Storage Account and connecting to its Blob Storage and Azure Files services through Private Endpoints.
 
-Learn how to securely use Azure Storage from a private Azure network.
-
-### Goals
-
-* Create and use Blob Storage
-* Configure Private Endpoint
-* Configure Private DNS
-* Use Managed Identity + RBAC
-* Understand Blob access tiers
-* Configure Lifecycle Management
-* Understand Azure Files and its use cases
+This lab focused on **Azure Storage, private networking, Private DNS, Managed Identity, RBAC, storage access tiers, and Lifecycle Management**.
 
 ---
 
-## Architecture
+# Architecture Overview
 
 ```text
-                    Azure
-┌─────────────────────────────────────────────┐
-│                                             │
-│  Storage Account                            │
-│  lab07storage867660b2                       │
-│                                             │
-│  ┌──────────────┐      ┌──────────────┐     │
-│  │ Blob Storage │      │ Azure Files  │     │
-│  │ web-logs/    │      │ iis-logs     │     │
-│  │ test.log     │      │              │     │
-│  └──────┬───────┘      └──────┬───────┘     │
-│         │                      │             │
-│    Private Endpoint       Private Endpoint  │
-│      10.0.2.4                10.0.2.5        │
-│         │                      │             │
-│         └──────────┬───────────┘             │
-│                    │                         │
-│                 lab07-vnet                   │
-│                    │                         │
-│                 VM 10.0.1.4                  │
-│                                             │
-└─────────────────────────────────────────────┘
+                         VNet
+                    10.0.0.0/16
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+         Web Subnet          Private Endpoint Subnet
+        10.0.1.0/24              10.0.2.0/24
+              │                     │
+              │              ┌──────┴──────┐
+              │              │             │
+              │          PE 10.0.2.4   PE 10.0.2.5
+              │              │             │
+              │            Blob         Azure Files
+              │              │             │
+              │              └──────┬──────┘
+              │                     │
+              │              Storage Account
+              │             lab07storage867660b2
+              │
+           VM 10.0.1.4
+          lab07-vm
+```
+
+The VM accessed the Storage Account through Private Endpoints instead of using the public Internet path.
+
+### Storage Account structure
+
+```text
+Storage Account
+lab07storage867660b2
+│
+├── Blob Storage
+│   └── web-logs
+│       └── test.log
+│
+└── Azure Files
+    └── iis-logs
+```
+
+Blob Storage and Azure Files use separate Private Endpoints because they are different Storage services.
+
+```text
+Blob
+  ↓
+Private Endpoint
+10.0.2.4
+
+Azure Files
+  ↓
+Private Endpoint
+10.0.2.5
 ```
 
 ---
 
-## Storage Account
+# Resources
 
-* Name: `lab07storage867660b2`
-* Type: StorageV2
-* Performance: Standard
-* Replication: LRS
-* Default access tier: Hot
-* Public Network Access: Disabled
-* Blob public access: Disabled
-* HTTPS only: Enabled
+| Resource                     | Configuration          |
+| ---------------------------- | ---------------------- |
+| Resource Group               | `lab07-rg`             |
+| Location                     | `northcentralus`       |
+| Storage Account              | `lab07storage867660b2` |
+| Storage SKU                  | `Standard_LRS`         |
+| Storage Type                 | `StorageV2`            |
+| Default Access Tier          | `Hot`                  |
+| Public Network Access        | Disabled               |
+| Blob Public Access           | Disabled               |
+| HTTPS Only                   | Enabled                |
+| VNet                         | `lab07-vnet`           |
+| VNet CIDR                    | `10.0.0.0/16`          |
+| Web Subnet                   | `10.0.1.0/24`          |
+| Private Endpoint Subnet      | `10.0.2.0/24`          |
+| VM                           | `lab07-vm`             |
+| VM Private IP                | `10.0.1.4`             |
+| Blob Private Endpoint        | `10.0.2.4`             |
+| Azure Files Private Endpoint | `10.0.2.5`             |
+| Blob Container               | `web-logs`             |
+| Azure File Share             | `iis-logs`             |
 
 ---
 
-## Blob Storage
+# 1. Create the Storage Account
 
-Created container:
+I created a Storage Account:
+
+```text
+lab07storage867660b2
+```
+
+The Storage Account used:
+
+```text
+StorageV2
+Standard_LRS
+Hot
+```
+
+Public network access was disabled.
+
+This means the Storage Account was not intended to be accessed directly through its public endpoint.
+
+The Storage Account provided two different storage services:
+
+```text
+Storage Account
+│
+├── Blob Storage
+│
+└── Azure Files
+```
+
+---
+
+# 2. Create Blob Storage
+
+I created a Blob container:
 
 ```text
 web-logs
 ```
 
-Created and uploaded:
+The purpose was to simulate a location where web server logs could be stored.
+
+I also created/uploaded:
 
 ```text
-web-logs/test.log
+test.log
 ```
 
-The VM created a normal Linux file:
+The basic structure was:
 
 ```text
-/tmp/test.log
+Storage Account
+    ↓
+Blob Storage
+    ↓
+web-logs
+    ↓
+test.log
 ```
-
-and uploaded it to Blob Storage.
-
-Important:
-
-> RBAC does not create the file. RBAC authorizes the VM's identity to perform Blob data operations.
 
 ---
 
-## Private Endpoint + Private DNS
+# 3. Create the Virtual Network
 
-### Blob
+I created:
 
-Private Endpoint:
+```text
+lab07-vnet
+10.0.0.0/16
+```
+
+with two subnets:
+
+```text
+lab07-vnet
+│
+├── web-subnet
+│   └── 10.0.1.0/24
+│
+└── private-endpoint-subnet
+    └── 10.0.2.0/24
+```
+
+The VM was placed in the web subnet.
+
+The Private Endpoints were placed in the dedicated Private Endpoint subnet.
+
+---
+
+# 4. Create the Private VM
+
+The VM was:
+
+```text
+lab07-vm
+```
+
+with:
+
+```text
+Private IP: 10.0.1.4
+Public IP: None
+```
+
+The VM was therefore not directly exposed to the Internet.
+
+The VM was used as the client that accessed the Storage Account privately.
+
+---
+
+# 5. Create a Blob Private Endpoint
+
+I created:
+
+```text
+lab07-storage-pe
+```
+
+for the Blob service.
+
+The Private Endpoint received:
 
 ```text
 10.0.2.4
 ```
 
-Private DNS Zone:
+The target resource was the Storage Account:
+
+```text
+lab07storage867660b2
+```
+
+The connection was:
+
+```text
+VM
+ ↓
+Private Endpoint 10.0.2.4
+ ↓
+Blob Storage
+```
+
+The Private Endpoint connection was successfully approved.
+
+---
+
+# 6. Private DNS for Blob Storage
+
+I created the Private DNS Zone:
 
 ```text
 privatelink.blob.core.windows.net
 ```
 
-Verified:
+and linked it to:
+
+```text
+lab07-vnet
+```
+
+I then created a Private DNS Zone Group for the Blob Private Endpoint.
+
+This allowed the normal Blob hostname:
 
 ```text
 lab07storage867660b2.blob.core.windows.net
-        ↓
+```
+
+to resolve to the private IP:
+
+```text
 10.0.2.4
 ```
 
-### Azure Files
-
-Private Endpoint:
+The resulting flow was:
 
 ```text
-10.0.2.5
-```
-
-Private DNS Zone:
-
-```text
-privatelink.file.core.windows.net
-```
-
-Verified:
-
-```text
-lab07storage867660b2.file.core.windows.net
-        ↓
-10.0.2.5
-```
-
-### Key concept
-
-Private Endpoint and Private DNS have different roles.
-
-```text
-Private Endpoint
-= Private network path
-
+VM
+ ↓
+lab07storage867660b2.blob.core.windows.net
+ ↓
 Private DNS
-= Name resolution to the private IP
+ ↓
+10.0.2.4
+ ↓
+Blob Private Endpoint
+ ↓
+Blob Storage
 ```
 
 ---
 
-## Managed Identity + RBAC
+# 7. Verify Private DNS Resolution
 
-Assigned a System-assigned Managed Identity to the VM.
+Before configuring Private DNS correctly, the Storage hostname resolved to a public IP.
 
-The VM's identity was given:
+After creating the Private DNS Zone and Zone Group, the VM returned:
+
+```text
+10.0.2.4
+lab07storage867660b2.privatelink.blob.core.windows.net
+lab07storage867660b2.blob.core.windows.net
+```
+
+This confirmed that the Storage hostname was resolving to the Private Endpoint.
+
+---
+
+# 8. Test Private Connectivity to Blob Storage
+
+I tested connectivity from the VM using:
+
+```text
+curl
+```
+
+The request connected to:
+
+```text
+10.0.2.4:443
+```
+
+The TLS connection was successfully established.
+
+The Storage service returned:
+
+```text
+HTTP/1.1 400
+```
+
+Although this was an HTTP error, it confirmed that the VM successfully reached the Storage service.
+
+The important evidence was:
+
+```text
+Trying 10.0.2.4:443...
+Connected...
+SSL connection using TLSv1.3
+```
+
+This demonstrated:
+
+```text
+DNS
+ ↓
+Private IP
+ ↓
+TCP 443
+ ↓
+TLS
+ ↓
+Azure Storage
+```
+
+---
+
+# 9. Managed Identity
+
+I assigned a System Assigned Managed Identity to the VM.
+
+```bash
+az vm identity assign \
+  --resource-group $RG \
+  --name $VM
+```
+
+The VM received a Principal ID:
+
+```text
+8ddfa42d-ee1f-4fce-9809-ca552946404e
+```
+
+The important concept was:
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+Principal ID
+```
+
+The Managed Identity allows the VM to authenticate to Azure services without storing a password or secret inside the VM.
+
+---
+
+# 10. RBAC
+
+I retrieved the Storage Account Resource ID:
+
+```bash
+STORAGE_ID=$(az storage account show \
+  --resource-group $RG \
+  --name $STORAGE \
+  --query id \
+  --output tsv)
+```
+
+I then assigned the VM's Managed Identity the role:
 
 ```text
 Storage Blob Data Contributor
 ```
 
-at the Storage Account scope.
+using:
 
-Concept:
-
-```text
-Managed Identity
-    ↓
-Authentication
-    ↓
-Access Token
-    ↓
-RBAC
-    ↓
-Authorization
-    ↓
-Blob access
-```
-
-Important distinction:
-
-```text
-Authentication = Who are you?
-
-Authorization = What are you allowed to do?
-```
+```bash
 az role assignment create \
   --assignee-object-id "$PRINCIPAL_ID" \
   --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
   --scope "$STORAGE_ID"
+```
+
+The important concept was:
+
+```text
+Managed Identity
+      ↓
+Who?
+      ↓
+Principal ID
+
+RBAC Role
+      ↓
+What can it do?
+      ↓
+Storage Blob Data Contributor
+
+Scope
+      ↓
+Where?
+      ↓
+Storage Account
+```
+
+Therefore:
+
+```text
+VM Identity
+    ↓
+Storage Blob Data Contributor
+    ↓
+Storage Account
+    ↓
+Blob Storage
+```
 
 ---
 
-## Blob Access Tier
+# 11. Managed Identity Access Token
 
-Initial Blob tier:
+I used the Azure Instance Metadata Service (IMDS) from the VM to request an access token.
+
+The VM requested a token for:
+
+```text
+https://storage.azure.com/
+```
+
+The basic process was:
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+IMDS
+ ↓
+Access Token
+ ↓
+Azure Storage
+```
+
+The access token is a temporary proof that the VM is authenticated as its Managed Identity.
+
+The token itself was not stored or shared.
+
+---
+
+# 12. Access Blob Storage Without Azure CLI
+
+The VM did not have Azure CLI installed.
+
+An attempt to install Azure CLI failed because the VM did not have external Internet access.
+
+Instead of changing the network design just to install Azure CLI, I used:
+
+```text
+Managed Identity
++
+Access Token
++
+Azure Storage REST API
+```
+
+This was useful because it demonstrated that Azure CLI is not required for every Azure operation.
+
+---
+
+# 13. Create Blob Container Using Managed Identity
+
+I used the Managed Identity token and the Storage REST API to create the Blob container.
+
+The request returned:
+
+```text
+HTTP/1.1 201 Created
+```
+
+This confirmed that:
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+RBAC
+ ↓
+Private Endpoint
+ ↓
+Blob Storage
+```
+
+was working successfully.
+
+---
+
+# 14. Upload a Blob
+
+I created a normal Linux file inside the VM:
+
+```text
+/tmp/test.log
+```
+
+The file contained a test log entry.
+
+Important distinction:
+
+**RBAC did not create the file.**
+
+The file was created normally inside Linux.
+
+RBAC allowed the VM's identity to upload the file to Blob Storage.
+
+The process was:
+
+```text
+Linux VM
+ ↓
+/tmp/test.log
+ ↓
+Managed Identity
+ ↓
+RBAC
+ ↓
+Blob Storage
+ ↓
+web-logs/test.log
+```
+
+The upload returned:
+
+```text
+HTTP/1.1 201 Created
+```
+
+---
+
+# 15. Blob Access Tier
+
+The Storage Account default access tier was:
 
 ```text
 Hot
 ```
 
-Manually changed:
+I checked the Blob using the VM because public access to the Storage Account was disabled.
+
+The Blob initially returned:
 
 ```text
-Hot → Cool
+x-ms-access-tier: Hot
 ```
 
-Verified with the Blob response:
+and:
+
+```text
+x-ms-access-tier-inferred: true
+```
+
+This demonstrated that the Blob was using the Storage Account's default access tier rather than having a separately configured Blob tier.
+
+---
+
+# 16. Manually Change Blob Tier
+
+I manually changed:
+
+```text
+test.log
+```
+
+from:
+
+```text
+Hot
+```
+
+to:
+
+```text
+Cool
+```
+
+The correct REST operation was:
+
+```text
+PUT
+?comp=tier
+```
+
+with:
 
 ```text
 x-ms-access-tier: Cool
 ```
 
-Important:
-
-> Changing one Blob's tier does not change the Storage Account's default tier.
-
----
-
-## Lifecycle Management
-
-Configured:
-
-```text
-Target:
-web-logs/
-
-Blob type:
-Block Blob
-
-Condition:
-More than 30 days since modification
-
-Action:
-Hot → Cool
-```
-
-Purpose:
-
-> Automatically move older logs to a lower-cost access tier.
-
-Lifecycle Management is different from manually changing a Blob's tier.
-
----
-
-## Azure Files
-
-Created:
-
-```text
-iis-logs
-```
-
-Azure Files is suitable for:
-
-* SMB file shares
-* Shared folders
-* Applications that expect a traditional file system
-* Windows/Linux file-share scenarios
-
-Difference:
-
-```text
-Blob Storage
-= Object Storage
-
-Azure Files
-= Managed File Share
-```
-
-The SMB mount was **not required for this lab**.
-
----
-
-## Troubleshooting Lessons
-
-### 1. Azure Policy / Region
-
-Private Endpoint creation initially failed due to the subscription's allowed resource deployment regions.
-
-Using the explicitly allowed region:
-
-```text
-northcentralus
-```
-
-resolved the deployment issue.
-
----
-
-### 2. Cloud Shell Variables
-
-Cloud Shell sessions can expire.
-
-Example:
-
-```text
-STORAGE_ID
-```
-
-was lost and had to be recreated.
-
-Lesson:
-
-> Azure resources persist, but shell variables do not necessarily persist across Cloud Shell sessions.
-
----
-
-### 3. Management Plane vs Data Plane
-
-Azure CLI management operations such as:
-
-```text
-az storage account show
-```
-
-could work from Cloud Shell.
-
-Direct Blob data-plane access was blocked because Public Network Access was disabled.
-
-Lesson:
-
-> Management Plane access and Data Plane access are different.
-
----
-
-### 4. DNS Troubleshooting
-
-Before Private DNS:
-
-```text
-Storage FQDN
-    ↓
-Public IP
-```
-
-After Private DNS:
-
-```text
-Storage FQDN
-    ↓
-Private Endpoint IP
-```
-
-Azure Files initially returned:
-
-```text
-NXDOMAIN
-```
-
-because the Private DNS Zone Group had not yet been configured.
-
----
-
-### 5. REST API Troubleshooting
-
-Incorrect HTTP method:
-
-```text
-SET
-```
-
-resulted in:
-
-```text
-400 InvalidHttpVerb
-```
-
-Correct method:
-
-```text
-PUT
-```
-
-Then:
-
-```text
-411 Length Required
-```
-
-was resolved by adding:
+and:
 
 ```text
 Content-Length: 0
 ```
 
-The final request returned:
+The request returned:
 
 ```text
-200 OK
+HTTP/1.1 200 OK
+```
+
+I then verified the Blob:
+
+```text
+x-ms-access-tier: Cool
+```
+
+This demonstrated that an individual Blob can have a different access tier from the Storage Account's default tier.
+
+---
+
+# 17. Lifecycle Management
+
+I created a Lifecycle Management policy.
+
+The policy was:
+
+```text
+Blob type: Block Blob
+Prefix: web-logs/
+Condition: Older than 30 days
+Action: Move to Cool
+```
+
+The policy was stored in:
+
+```text
+lifecycle-policy.json
+```
+
+Example:
+
+```json
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "move-old-logs-to-cool",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": [
+            "blockBlob"
+          ],
+          "prefixMatch": [
+            "web-logs/"
+          ]
+        },
+        "actions": {
+          "baseBlob": {
+            "tierToCool": {
+              "daysAfterModificationGreaterThan": 30
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+I applied the policy using:
+
+```bash
+az storage account management-policy create \
+  --resource-group $RG \
+  --account-name $STORAGE \
+  --policy @lifecycle-policy.json
+```
+
+The policy was successfully created.
+
+### Lifecycle vs Manual Tier Change
+
+The difference is:
+
+```text
+Manual
+Blob
+ ↓
+Immediately change tier
+ ↓
+Cool
+```
+
+while Lifecycle Management is:
+
+```text
+Blob
+ ↓
+Condition is evaluated
+ ↓
+After 30+ days
+ ↓
+Automatically move to Cool
+```
+
+The Lifecycle policy does not necessarily execute immediately after creation.
+
+---
+
+# 18. Azure Files
+
+I also created an Azure Files share:
+
+```text
+iis-logs
+```
+
+The structure was:
+
+```text
+Storage Account
+    ↓
+Azure Files
+    ↓
+iis-logs
+```
+
+This demonstrated the difference between Blob Storage and Azure Files.
+
+### Blob Storage
+
+```text
+Object / Blob storage
+
+web-logs/
+└── test.log
+```
+
+Useful for:
+
+* Application logs
+* Web server logs
+* Backups
+* Object data
+
+### Azure Files
+
+```text
+Managed file share
+
+iis-logs/
+```
+
+Useful when applications or users need a shared file system.
+
+Azure Files can provide SMB-based file sharing.
+
+---
+
+# 19. Azure Files Private Endpoint
+
+I created another Private Endpoint for the Azure Files service.
+
+The Private Endpoint received:
+
+```text
+10.0.2.5
+```
+
+The architecture became:
+
+```text
+VM
+ │
+ ├── Blob Private Endpoint
+ │      └── 10.0.2.4
+ │
+ └── Azure Files Private Endpoint
+        └── 10.0.2.5
+```
+
+Both Private Endpoints connected to the same Storage Account:
+
+```text
+lab07storage867660b2
+```
+
+The difference was the Storage service being accessed.
+
+```text
+10.0.2.4 → Blob
+10.0.2.5 → Azure Files
 ```
 
 ---
 
-## Key Takeaways
+# 20. Private DNS for Azure Files
 
-1. Private Endpoint provides a private network path.
-2. Private DNS makes the normal Azure service hostname resolve to the private IP.
-3. Managed Identity provides the VM's Azure identity.
-4. RBAC controls what that identity can do.
-5. Blob Storage is object storage.
-6. Azure Files is a managed file share.
-7. Hot/Cool/Archive are access tiers with different cost/access characteristics.
-8. Lifecycle Management automates storage-tier transitions.
-9. Management Plane and Data Plane are different.
-10. Troubleshooting should separate DNS, network connectivity, authentication, and authorization.
+I created:
 
-## Lab Status
+```text
+privatelink.file.core.windows.net
+```
+
+and linked it to:
+
+```text
+lab07-vnet
+```
+
+I then created a Private DNS Zone Group for the Azure Files Private Endpoint.
+
+The normal Azure Files hostname:
+
+```text
+lab07storage867660b2.file.core.windows.net
+```
+
+resolved to:
+
+```text
+10.0.2.5
+```
+
+The final DNS result was:
+
+```text
+10.0.2.5
+lab07storage867660b2.privatelink.file.core.windows.net
+lab07storage867660b2.file.core.windows.net
+```
+
+This confirmed that Azure Files was also resolving through the private network.
+
+---
+
+# Problems I Encountered
+
+## 1. Azure Policy blocked the original region
+
+The initial deployment using `canadacentral` was blocked by an Azure Policy.
+
+The policy was:
+
+```text
+Allowed resource deployment regions
+```
+
+The subscription allowed specific regions including:
+
+```text
+northcentralus
+eastus
+eastus2
+southcentralus
+westus
+```
+
+I changed the lab location to:
+
+```text
+northcentralus
+```
+
+and the resources were successfully deployed.
+
+### Lesson
+
+Azure resource deployment can be restricted by subscription-level policies.
+
+Before assuming that a CLI command is wrong, check whether Azure Policy is blocking the resource or region.
+
+---
+
+## 2. Private Endpoint creation initially failed
+
+The first Private Endpoint creation attempt failed with a region-related policy error.
+
+I explicitly specified:
+
+```text
+--location $LOC
+```
+
+and the deployment succeeded.
+
+This reinforced the importance of checking the exact Azure error message rather than assuming the resource configuration itself is incorrect.
+
+---
+
+## 3. Public DNS resolution before Private DNS
+
+Before Private DNS was configured, the VM resolved:
+
+```text
+lab07storage867660b2.blob.core.windows.net
+```
+
+to a public IP.
+
+The Private Endpoint already existed, but the hostname was not yet resolving to the Private Endpoint.
+
+After configuring the Private DNS Zone and Zone Group, it resolved to:
+
+```text
+10.0.2.4
+```
+
+### Lesson
+
+Creating a Private Endpoint alone does not automatically mean that every normal service hostname will resolve to its private IP.
+
+Private DNS is an important part of the private access design.
+
+---
+
+## 4. Azure CLI was unavailable inside the VM
+
+I attempted to use:
+
+```text
+az
+```
+
+inside the VM.
+
+The VM returned:
+
+```text
+az: not found
+```
+
+I considered installing Azure CLI, but the VM did not have external Internet access.
+
+Instead, I used:
+
+```text
+Managed Identity
++
+IMDS
++
+REST API
+```
+
+to access Blob Storage.
+
+### Lesson
+
+Do not automatically change network security just to install a tool.
+
+First consider whether the required operation can be performed using the existing architecture.
+
+---
+
+## 5. Cloud Shell could not access Blob data
+
+I could inspect the Storage Account through Azure Resource Manager from Cloud Shell.
+
+However, attempting to access Blob data from Cloud Shell failed because public network access to the Storage Account was disabled.
+
+This demonstrated an important difference between:
+
+```text
+Management Plane
+```
+
+and:
+
+```text
+Data Plane
+```
+
+### Management Plane
+
+Used for managing Azure resources.
+
+Example:
+
+```text
+az storage account show
+```
+
+### Data Plane
+
+Used for accessing the actual data.
+
+Example:
+
+```text
+Blob data
+File data
+```
+
+The data plane was intentionally restricted to private access.
+
+---
+
+## 6. Azure Files Private DNS initially returned NXDOMAIN
+
+After creating the Azure Files Private DNS Zone and VNet link, DNS initially returned:
+
+```text
+NXDOMAIN
+```
+
+The Private DNS Zone existed, but the Private Endpoint was not yet associated with it through a DNS Zone Group.
+
+After creating the DNS Zone Group, the hostname resolved correctly to:
+
+```text
+10.0.2.5
+```
+
+### Lesson
+
+The Private DNS architecture requires more than simply creating a DNS Zone.
+
+The Private Endpoint, DNS Zone Group, and VNet link all need to be correctly configured.
+
+---
+
+# Troubleshooting Workflow
+
+The main troubleshooting process for Lab 07 was:
+
+```text
+Storage access problem
+        ↓
+Check Storage Account configuration
+        ↓
+Check Public Network Access
+        ↓
+Check Private Endpoint
+        ↓
+Check Private Endpoint IP
+        ↓
+Check Private DNS
+        ↓
+Check DNS resolution
+        ↓
+Check TCP 443 connectivity
+        ↓
+Check authentication
+        ↓
+Check RBAC
+        ↓
+Check Storage API response
+```
+
+This helped separate different types of problems:
+
+```text
+DNS problem
+    ↓
+Hostname resolves incorrectly
+
+Network problem
+    ↓
+Cannot connect to private IP / port 443
+
+Authentication problem
+    ↓
+Token or identity problem
+
+Authorization problem
+    ↓
+RBAC does not allow the operation
+
+Application/API problem
+    ↓
+Storage API returns an HTTP error
+```
+
+---
+
+# Management Plane vs Data Plane
+
+One of the important concepts from this lab was the difference between the Azure management plane and data plane.
+
+```text
+Management Plane
+       ↓
+Azure Resource Manager
+       ↓
+Manage resources
+       ↓
+Storage Account configuration
+```
+
+versus:
+
+```text
+Data Plane
+       ↓
+Storage service
+       ↓
+Read / write Blob or File data
+```
+
+For example:
+
+```text
+az storage account show
+```
+
+can manage or inspect the Storage Account through Azure Resource Manager.
+
+But:
+
+```text
+Blob data access
+```
+
+requires access to the Storage data plane.
+
+This distinction helped explain why Cloud Shell could manage the Storage Account while being unable to directly access Blob data when public network access was disabled.
+
+---
+
+# Managed Identity vs RBAC
+
+Another important concept was the difference between authentication and authorization.
+
+```text
+Managed Identity
+       ↓
+Who are you?
+```
+
+```text
+RBAC
+       ↓
+What are you allowed to do?
+```
+
+The complete flow was:
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+Access Token
+ ↓
+Azure Storage
+ ↓
+Check RBAC
+ ↓
+Storage Blob Data Contributor
+ ↓
+Allow Blob operation
+```
+
+The VM's Managed Identity was not manually combined with the token.
+
+Azure issued the token based on the VM's identity, and Azure Storage used the identity represented by the token when evaluating RBAC permissions.
+
+---
+
+# Important Security Concepts
+
+## Private Endpoint
+
+A Private Endpoint provides a private IP address inside the VNet for accessing an Azure service.
+
+In this lab:
+
+```text
+Blob
+ ↓
+10.0.2.4
+```
+
+and:
+
+```text
+Azure Files
+ ↓
+10.0.2.5
+```
+
+The Storage Account did not need to be publicly accessible.
+
+---
+
+## Private DNS
+
+Private DNS allows the normal Azure service hostname to resolve to the Private Endpoint's private IP.
+
+For Blob:
+
+```text
+lab07storage867660b2.blob.core.windows.net
+                    ↓
+                 10.0.2.4
+```
+
+For Azure Files:
+
+```text
+lab07storage867660b2.file.core.windows.net
+                    ↓
+                 10.0.2.5
+```
+
+---
+
+## Managed Identity
+
+Managed Identity provides an Azure-managed identity for the VM.
+
+This avoids storing long-term credentials inside the VM.
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+Access Token
+```
+
+---
+
+## RBAC
+
+RBAC controls what the identity can do.
+
+In this lab:
+
+```text
+Storage Blob Data Contributor
+```
+
+was assigned to the VM's Managed Identity at the Storage Account scope.
+
+---
+
+## Access Tiers
+
+Azure Blob Storage provides different access tiers for different access patterns.
+
+```text
+Hot
+ ↓
+Frequently accessed data
+
+Cool
+ ↓
+Less frequently accessed data
+
+Archive
+ ↓
+Long-term rarely accessed data
+```
+
+In this lab:
+
+```text
+Storage Account default: Hot
+test.log: manually changed to Cool
+```
+
+---
+
+## Lifecycle Management
+
+Lifecycle Management can automatically change Blob tiers based on conditions.
+
+Example:
+
+```text
+web-logs/
+      ↓
+Blob older than 30 days
+      ↓
+Cool
+```
+
+This can help reduce storage costs for older data.
+
+---
+
+# Blob Storage vs Azure Files
+
+A key concept from this lab was that Blob Storage and Azure Files are different storage services.
+
+```text
+Storage Account
+│
+├── Blob Storage
+│   └── Object storage
+│
+└── Azure Files
+    └── File share
+```
+
+### Blob
+
+Best suited for:
+
+* Logs
+* Backups
+* Application objects
+* Large amounts of unstructured data
+
+### Azure Files
+
+Best suited for:
+
+* Shared file systems
+* SMB file shares
+* Applications that expect file-system style access
+
+---
+
+# Key Commands
+
+## Assign Managed Identity
+
+```bash
+az vm identity assign \
+  --resource-group $RG \
+  --name $VM
+```
+
+## Get Storage Account Resource ID
+
+```bash
+STORAGE_ID=$(az storage account show \
+  --resource-group $RG \
+  --name $STORAGE \
+  --query id \
+  --output tsv)
+```
+
+## Get VM Principal ID
+
+```bash
+PRINCIPAL_ID=$(az vm show \
+  --resource-group $RG \
+  --name $VM \
+  --query identity.principalId \
+  --output tsv)
+```
+
+## Assign RBAC
+
+```bash
+az role assignment create \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$STORAGE_ID"
+```
+
+## Check Storage Account Access Tier
+
+```bash
+az storage account show \
+  --resource-group $RG \
+  --name $STORAGE \
+  --query "accessTier" \
+  --output tsv
+```
+
+## Create Lifecycle Policy
+
+```bash
+az storage account management-policy create \
+  --resource-group $RG \
+  --account-name $STORAGE \
+  --policy @lifecycle-policy.json
+```
+
+## Verify Lifecycle Policy
+
+```bash
+az storage account management-policy show \
+  --resource-group $RG \
+  --account-name $STORAGE \
+  --query "policy.rules" \
+  --output json
+```
+
+---
+
+# Important Concepts Learned
+
+### Storage Account
+
+A Storage Account provides Azure storage services such as:
+
+```text
+Blob Storage
+Azure Files
+```
+
+---
+
+### Blob Storage
+
+Object storage used for data such as logs and backups.
+
+---
+
+### Azure Files
+
+Managed file storage that can provide shared file-system access.
+
+---
+
+### Private Endpoint
+
+Provides a private IP address inside a VNet for accessing Azure services privately.
+
+---
+
+### Private DNS
+
+Allows Azure service hostnames to resolve to Private Endpoint IP addresses.
+
+---
+
+### Managed Identity
+
+Provides an Azure-managed identity for applications and VMs.
+
+---
+
+### RBAC
+
+Controls what an identity is authorized to do.
+
+---
+
+### Access Token
+
+A short-lived credential used to prove the identity when accessing an Azure service.
+
+---
+
+### Lifecycle Management
+
+Automatically performs actions on Blob data based on conditions such as age.
+
+---
+
+### Management Plane
+
+Used to manage Azure resources.
+
+---
+
+### Data Plane
+
+Used to access the actual data stored in an Azure service.
+
+---
+
+# Key Troubleshooting Lessons
+
+When Azure Storage access does not work:
+
+1. Check the Storage Account configuration.
+2. Check whether public network access is disabled.
+3. Check the Private Endpoint.
+4. Check the Private Endpoint IP.
+5. Check Private DNS.
+6. Check DNS resolution from the VM.
+7. Check TCP connectivity to port 443.
+8. Check Managed Identity authentication.
+9. Check RBAC permissions.
+10. Check the Storage API response.
+11. Distinguish management-plane problems from data-plane problems.
+12. Do not change the network design just to install a tool unless it is actually necessary.
+
+The most important troubleshooting lesson from this lab was:
+
+> **Separate DNS, network, authentication, authorization, and application problems instead of treating every failure as a network problem.**
+
+---
+
+# Main Takeaway
+
+The main thing I learned from Lab 07 was how Azure Storage can be securely accessed from a private VNet.
+
+The overall architecture was:
+
+```text
+                         VNet
+                    10.0.0.0/16
+                         │
+                    Private VM
+                    10.0.1.4
+                         │
+             ┌───────────┴───────────┐
+             │                       │
+        Private DNS             Private DNS
+             │                       │
+             ▼                       ▼
+     Private Endpoint        Private Endpoint
+        10.0.2.4                10.0.2.5
+             │                       │
+             ▼                       ▼
+           Blob                  Azure Files
+             │                       │
+             └───────────┬───────────┘
+                         ▼
+                  Storage Account
+                 lab07storage867660b2
+```
+
+I also learned how Managed Identity and RBAC work together:
+
+```text
+VM
+ ↓
+Managed Identity
+ ↓
+Access Token
+ ↓
+RBAC
+ ↓
+Storage Account
+ ↓
+Blob
+```
+
+The most valuable lessons from this lab were:
+
+* How Private Endpoints provide private connectivity to Azure services
+* How Private DNS makes normal Azure hostnames resolve to private IPs
+* How Managed Identity provides passwordless Azure authentication
+* How RBAC provides authorization
+* The difference between Management Plane and Data Plane
+* How Blob Storage differs from Azure Files
+* How access tiers work
+* How Lifecycle Management can automate storage tier changes
+* How to troubleshoot Azure connectivity systematically
+
+---
+
+# Lab Status
 
 **Completed**
 
-Lab 07 technical objectives were achieved.
+The original Lab 07 objectives were completed:
 
-No Azure Files SMB mounting was required because it was outside the original lab scope.
+* [x] Storage Account
+* [x] Blob Storage
+* [x] Private Endpoint
+* [x] Private DNS
+* [x] Managed Identity
+* [x] RBAC
+* [x] Blob Access Tiers
+* [x] Lifecycle Management
+* [x] Azure Files
+* [x] Azure Files Private Endpoint
+* [x] Azure Files Private DNS
+
+The Azure Files SMB mounting exercise was not required for the original lab objective and was intentionally not included as part of the completed lab.
+
+All Lab 07 Azure resources were cleaned up after completion to avoid unnecessary Azure charges.
+
+---
+
+# Final Architecture
+
+```text
+                              Azure VNet
+                              10.0.0.0/16
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │                             │
+              Web Subnet                 Private Endpoint Subnet
+              10.0.1.0/24                     10.0.2.0/24
+                    │                             │
+                    │                    ┌────────┴────────┐
+                    │                    │                 │
+                    │               PE 10.0.2.4      PE 10.0.2.5
+                    │                    │                 │
+                    │                  Blob              Files
+                    │                    │                 │
+                    │                    └────────┬────────┘
+                    │                             │
+              VM 10.0.1.4                  Storage Account
+             lab07-vm                     lab07storage867660b2
+                    │
+                    │
+              Managed Identity
+                    │
+                    ▼
+                   RBAC
+                    │
+                    ▼
+             Blob Data Access
+```
+
+The key design principle was:
+
+> **Keep the VM private, keep Storage private, use Private Endpoints for connectivity, use Private DNS for name resolution, and use Managed Identity + RBAC for secure authorization.**
