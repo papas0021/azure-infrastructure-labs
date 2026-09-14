@@ -1,0 +1,520 @@
+# Lab08 — Azure SQL Database / PaaS
+
+## Goal
+
+* Learn Azure SQL Database as a PaaS service
+* Understand PaaS vs IaaS
+* Configure firewall access
+* Configure Private Endpoint and Private DNS
+* Disable public network access
+* Understand backup, availability, and responsibility boundaries
+
+---
+
+## 1. Resource Group
+
+```bash
+RG="lab08-rg"
+LOC="northcentralus"
+
+az group create \
+  --name "$RG" \
+  --location "$LOC"
+```
+
+Resource Group:
+
+* Name: `lab08-rg`
+* Location: `northcentralus`
+
+---
+
+## 2. Register Azure SQL Resource Provider
+
+```bash
+az provider register --namespace Microsoft.Sql
+```
+
+Verified that the provider became:
+
+```text
+Registered
+```
+
+### What I learned
+
+Registering `Microsoft.Sql` makes SQL resources available to the subscription.
+
+It does **not** create a SQL Server.
+
+---
+
+## 3. Create SQL Logical Server
+
+`northcentralus` was unavailable for creating a new Azure SQL logical server, so I used `westus`.
+
+```bash
+SQL_SERVER="lab08-sql-74518410"
+SQL_ADMIN="sqladmin"
+
+az sql server create \
+  --resource-group "$RG" \
+  --name "$SQL_SERVER" \
+  --location "westus" \
+  --admin-user "$SQL_ADMIN" \
+  --admin-password "$SQL_PASSWORD"
+```
+
+SQL Server:
+
+```text
+lab08-sql-74518410
+```
+
+FQDN:
+
+```text
+lab08-sql-74518410.database.windows.net
+```
+
+---
+
+## 4. Create Azure SQL Database
+
+```bash
+SQL_DB="lab08-db"
+
+az sql db create \
+  --resource-group "$RG" \
+  --server "$SQL_SERVER" \
+  --name "$SQL_DB" \
+  --service-objective Basic
+```
+
+Database:
+
+```text
+lab08-db
+```
+
+Tier:
+
+```text
+Basic
+```
+
+Status:
+
+```text
+Online
+```
+
+### PaaS structure
+
+```text
+Azure SQL Logical Server
+        │
+        └── lab08-db
+```
+
+Unlike a VM-based database:
+
+```text
+VM
+ ├── Operating System
+ ├── SQL Server
+ └── Database
+```
+
+With Azure SQL Database, Azure manages the underlying OS and platform.
+
+---
+
+## 5. Firewall
+
+I checked my public IP from Windows PowerShell:
+
+```powershell
+(Invoke-RestMethod -Uri "https://api.ipify.org")
+```
+
+Then created a firewall rule:
+
+```bash
+MY_IP="38.172.226.131"
+
+az sql server firewall-rule create \
+  --resource-group "$RG" \
+  --server "$SQL_SERVER" \
+  --name "Allow-My-PC" \
+  --start-ip-address "$MY_IP" \
+  --end-ip-address "$MY_IP"
+```
+
+Firewall rule:
+
+```text
+Allow-My-PC
+```
+
+### What I learned
+
+The firewall controls access through the **public SQL endpoint**.
+
+However, after disabling public network access later, this rule is no longer useful for public access.
+
+---
+
+## 6. Connection String
+
+```bash
+az sql db show-connection-string \
+  --server "$SQL_SERVER" \
+  --name "$SQL_DB" \
+  --client sqlcmd
+```
+
+Example:
+
+```text
+sqlcmd -S tcp:lab08-sql-74518410.database.windows.net,1433 -d lab08-db -U <username> -P <password> -N -l 30
+```
+
+I also connected using Azure Portal Query Editor and confirmed:
+
+```sql
+SELECT DB_NAME();
+```
+
+Result:
+
+```text
+lab08-db
+```
+
+### Important note
+
+The Query Editor test confirmed:
+
+```text
+Azure Portal → Azure SQL Database
+```
+
+It did **not** prove that my physical PC connected through the firewall.
+
+---
+
+## 7. Create VNet and Private Endpoint Subnet
+
+```bash
+VNET="lab08-vnet"
+SUBNET="private-endpoint-subnet"
+
+az network vnet create \
+  --resource-group "$RG" \
+  --name "$VNET" \
+  --location "northcentralus" \
+  --address-prefix 10.8.0.0/16 \
+  --subnet-name "$SUBNET" \
+  --subnet-prefix 10.8.1.0/24
+```
+
+VNet:
+
+```text
+lab08-vnet
+10.8.0.0/16
+```
+
+Subnet:
+
+```text
+private-endpoint-subnet
+10.8.1.0/24
+```
+
+---
+
+## 8. Create Private Endpoint
+
+First, get the SQL Logical Server resource ID:
+
+```bash
+SQL_SERVER_ID=$(az sql server show \
+  --resource-group "$RG" \
+  --name "$SQL_SERVER" \
+  --query id \
+  -o tsv)
+```
+
+Create the Private Endpoint:
+
+```bash
+PE="lab08-private-endpoint"
+
+az network private-endpoint create \
+  --resource-group "$RG" \
+  --name "$PE" \
+  --location "northcentralus" \
+  --vnet-name "$VNET" \
+  --subnet "$SUBNET" \
+  --private-connection-resource-id "$SQL_SERVER_ID" \
+  --group-id sqlServer \
+  --connection-name "lab08-sql-connection"
+```
+
+Private Endpoint:
+
+```text
+lab08-private-endpoint
+```
+
+Private IP:
+
+```text
+10.8.1.4
+```
+
+Connection:
+
+```text
+lab08-sql-connection
+Status: Approved
+Provisioning: Succeeded
+```
+
+### Important concept
+
+The Private Endpoint is connected to the **SQL Logical Server**, not directly to `lab08-db`.
+
+The traffic path is:
+
+```text
+10.8.1.4
+    ↓
+Private Endpoint
+    ↓
+SQL Logical Server
+    ↓
+lab08-db
+```
+
+---
+
+## 9. Private DNS
+
+Create Private DNS Zone:
+
+```bash
+DNS_ZONE="privatelink.database.windows.net"
+
+az network private-dns zone create \
+  --resource-group "$RG" \
+  --name "$DNS_ZONE"
+```
+
+Link the DNS Zone to the VNet:
+
+```bash
+az network private-dns link vnet create \
+  --resource-group "$RG" \
+  --zone-name "$DNS_ZONE" \
+  --name "lab08-dns-link" \
+  --virtual-network "$VNET" \
+  --registration-enabled false
+```
+
+Then link the Private Endpoint to the DNS Zone:
+
+```bash
+az network private-endpoint dns-zone-group create \
+  --resource-group "$RG" \
+  --endpoint-name "$PE" \
+  --name "lab08-dns-zone-group" \
+  --private-dns-zone "$DNS_ZONE" \
+  --zone-name "privatelink-database-windows-net"
+```
+
+DNS record:
+
+```text
+lab08-sql-74518410.privatelink.database.windows.net
+        ↓
+10.8.1.4
+```
+
+### DNS flow
+
+```text
+Client
+  ↓
+lab08-sql-74518410.database.windows.net
+  ↓
+Private DNS
+  ↓
+10.8.1.4
+  ↓
+Private Endpoint
+  ↓
+SQL Logical Server
+  ↓
+lab08-db
+```
+
+---
+
+## 10. Disable Public Network Access
+
+```bash
+az sql server update \
+  --resource-group "$RG" \
+  --name "$SQL_SERVER" \
+  --set publicNetworkAccess=Disabled
+```
+
+Verify:
+
+```bash
+az sql server show \
+  --resource-group "$RG" \
+  --name "$SQL_SERVER" \
+  --query publicNetworkAccess \
+  -o tsv
+```
+
+Result:
+
+```text
+Disabled
+```
+
+### Result
+
+Public Internet access to the SQL Server is disabled.
+
+Access should now use the private network path through the Private Endpoint.
+
+---
+
+## 11. Backup
+
+```bash
+az sql db show \
+  --resource-group "$RG" \
+  --server "$SQL_SERVER" \
+  --name "$SQL_DB" \
+  --query "{backupRedundancy:currentBackupStorageRedundancy,tier:currentServiceObjectiveName,status:status}" \
+  -o table
+```
+
+Result:
+
+```text
+backupRedundancy    tier    status
+Geo                 Basic   Online
+```
+
+### What I learned
+
+Azure manages the backup infrastructure for Azure SQL Database.
+
+The customer still needs to understand and configure relevant backup, retention, and redundancy settings.
+
+---
+
+## 12. Availability
+
+```bash
+az sql db show \
+  --resource-group "$RG" \
+  --server "$SQL_SERVER" \
+  --name "$SQL_DB" \
+  --query "{tier:currentServiceObjectiveName,zoneRedundant:zoneRedundant,readScale:readScale}" \
+  -o table
+```
+
+Result:
+
+```text
+tier    zoneRedundant    readScale
+Basic   False            Disabled
+```
+
+### What I learned
+
+`zoneRedundant=False` does not mean Azure SQL has no availability management.
+
+Azure manages the underlying PaaS platform, while advanced availability features depend on the selected service tier/configuration.
+
+---
+
+# Key Takeaways
+
+### IaaS vs PaaS
+
+```text
+IaaS:
+
+VM
+ ├── OS
+ ├── SQL Server
+ └── Database
+
+Customer manages more infrastructure.
+```
+
+```text
+PaaS:
+
+Azure SQL Logical Server
+        │
+        └── Database
+
+Azure manages the underlying platform.
+```
+
+### Private access
+
+```text
+Private Client
+     ↓
+Private DNS
+     ↓
+10.8.1.4
+     ↓
+Private Endpoint
+     ↓
+SQL Logical Server
+     ↓
+lab08-db
+```
+
+### Public access
+
+```text
+Internet
+   X
+SQL Server
+
+Public Network Access = Disabled
+```
+
+---
+
+# Lab08 Status
+
+**Completed ✅**
+
+Topics covered:
+
+* Azure SQL Database
+* PaaS vs IaaS
+* SQL Logical Server
+* Firewall
+* Connection String
+* Private Endpoint
+* Private DNS
+* Public Network Access
+* Backup
+* Availability
+* Azure responsibility vs customer responsibility
