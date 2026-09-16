@@ -1,0 +1,165 @@
+# Lab09 — Microsoft Entra ID / RBAC
+
+## Goal
+
+Learn the basics of Microsoft Entra ID and Azure RBAC:
+
+* Entra ID Users and Groups
+* Azure RBAC
+* Role Assignment
+* Resource Group-level permissions
+* Least Privilege
+
+> Note: Creating test users was not possible because the current Canadian College Entra tenant does not give this account sufficient directory permissions. Other students' accounts were not used.
+
+---
+
+## Environment
+
+* Subscription: Azure for Students
+* Resource Group: `lab09-rg`
+* Location: `northcentralus`
+
+Resource Group scope:
+
+```text
+/subscriptions/7d32a922-2d31-4806-839c-4d9a22324ccb/resourceGroups/lab09-rg
+```
+
+---
+
+## Entra ID Groups
+
+### Lab09 Readers
+
+* Display Name: `Lab09 Readers`
+* Group ID: `60187c24-05da-4a58-87e2-631e889b2809`
+* Security Group: Yes
+
+### Lab09 Network
+
+* Display Name: `Lab09 Network`
+* Group ID: `a1e5a619-fe43-474a-8b7a-b0b7b29090c1`
+* Security Group: Yes
+
+---
+
+## RBAC Assignments
+
+### Lab09 Readers
+
+```text
+Lab09 Readers
+      ↓
+   Reader
+      ↓
+  lab09-rg
+```
+
+Scope:
+
+```text
+/subscriptions/7d32a922-2d31-4806-839c-4d9a22324ccb/resourceGroups/lab09-rg
+```
+
+### Lab09 Network
+
+```text
+Lab09 Network
+      ↓
+Network Contributor
+      ↓
+  lab09-rg
+```
+
+Scope:
+
+```text
+/subscriptions/7d32a922-2d31-4806-839c-4d9a22324ccb/resourceGroups/lab09-rg
+```
+
+---
+
+## Verification
+
+Verified with:
+
+```bash
+az role assignment list \
+  --scope "$SCOPE" \
+  --query "[].{role:roleDefinitionName,principal:principalType,principalId:principalId}" \
+  -o table
+```
+
+Result:
+
+```text
+Role                 Principal    PrincipalId
+-------------------  -----------  ------------------------------------
+Reader               Group        60187c24-05da-4a58-87e2-631e889b2809
+Network Contributor  Group        a1e5a619-fe43-474a-8b7a-b0b7b29090c1
+```
+
+---
+
+## Key Concepts Learned
+
+### Entra ID Group vs Azure Resource Group
+
+They are completely different objects.
+
+* **Entra ID Group** → manages identities/users
+* **Azure Resource Group** → contains Azure resources
+
+### RBAC
+
+An RBAC assignment can be understood as:
+
+```text
+WHO + WHAT + WHERE
+```
+
+* **WHO** → `--assignee-object-id`
+* **WHAT** → `--role`
+* **WHERE** → `--scope`
+
+Example:
+
+```text
+Lab09 Network
+    ↓ WHO
+Network Contributor
+    ↓ WHAT
+lab09-rg
+    ↓ WHERE
+```
+
+### Scope
+
+The Resource Group scope used in this lab applies only to `lab09-rg`, not to the entire subscription or other Resource Groups.
+
+### Least Privilege
+
+Permissions were assigned at the Resource Group level instead of granting unnecessary subscription-wide permissions.
+
+---
+
+## Limitation
+
+The original plan included:
+
+* User A → Reader
+* User B → Network Contributor
+* User C → management of a specific Resource Group
+
+Test users could not be created because the current Canadian College Entra tenant does not provide the required directory permissions to this account.
+
+A separate personal Entra tenant could be used for a future advanced Entra ID lab.
+
+---
+
+## Lab Status
+
+**Completed — Lab09**
+
+Core RBAC and Least Privilege concepts were implemented and verified using dedicated Entra ID security groups.
