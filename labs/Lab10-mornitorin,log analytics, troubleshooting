@@ -1,0 +1,439 @@
+# Lab 10 — Azure Monitoring / Log Analytics / Troubleshooting
+
+## Goal
+
+Build a small Azure environment and learn how to monitor resources and troubleshoot common failures using:
+
+* Azure Monitor
+* Log Analytics Workspace
+* Azure Monitor Agent (AMA)
+* Data Collection Rule (DCR)
+* Metrics
+* Alerts
+* Basic KQL
+* Network troubleshooting
+
+The main goal was to learn **what to check and in what order when a problem occurs**, rather than simply configuring monitoring.
+
+---
+
+## Architecture
+
+```text
+                    Azure VNet
+                 10.10.0.0/16
+                       │
+              ┌────────┴────────┐
+              │                 │
+       App VM                 DB VM
+    lab10-vm              lab10-db-vm
+    10.10.0.4              10.10.0.5
+       │                       │
+     Nginx                 Docker
+                               │
+                         PostgreSQL 16
+                            TCP 5432
+```
+
+### Main Resources
+
+| Resource                | Configuration               |
+| ----------------------- | --------------------------- |
+| Resource Group          | `lab10-rg`                  |
+| Region                  | `northcentralus`            |
+| Log Analytics Workspace | `lab10-law`                 |
+| VNet                    | `lab10-vnet`                |
+| VNet Address Space      | `10.10.0.0/16`              |
+| Subnet                  | `default` — `10.10.0.0/24`  |
+| App VM                  | `lab10-vm` — `10.10.0.4`    |
+| DB VM                   | `lab10-db-vm` — `10.10.0.5` |
+| DCR                     | `lab10-dcr`                 |
+| App                     | Nginx                       |
+| Database                | PostgreSQL 16 in Docker     |
+
+---
+
+## Monitoring Setup
+
+### Azure Monitor Agent
+
+Installed Azure Monitor Agent on `lab10-vm`.
+
+```bash
+az vm extension set \
+  --resource-group "$RG" \
+  --vm-name "$VM" \
+  --name AzureMonitorLinuxAgent \
+  --publisher Microsoft.Azure.Monitor \
+  --version 1.0
+```
+
+### Data Collection Rule
+
+Created `lab10-dcr` to collect Linux Syslog data and send it to `lab10-law`.
+
+```text
+VM Syslog
+   ↓
+Azure Monitor Agent
+   ↓
+DCR
+   ↓
+Log Analytics Workspace
+```
+
+The DCR was associated with `lab10-vm`.
+
+### KQL
+
+Basic queries were practiced, for example:
+
+```kusto
+Heartbeat
+| where Computer == "lab10-vm"
+| sort by TimeGenerated desc
+| take 10
+```
+
+```kusto
+Syslog
+| where TimeGenerated > ago(1h)
+| sort by TimeGenerated desc
+| take 20
+```
+
+Syslog generation on the VM was confirmed with:
+
+```bash
+logger "Lab10 test message"
+```
+
+However, the Syslog records did not appear in Log Analytics during the lab. This was recorded as a monitoring ingestion issue rather than expanding the lab into deeper AMA troubleshooting.
+
+---
+
+# Troubleshooting Scenarios
+
+## 1. High CPU Usage
+
+Created an Azure Monitor CPU alert for `lab10-vm`.
+
+* Metric: `Percentage CPU`
+* Aggregation: Average
+* Threshold: 40% for testing
+* Evaluation frequency: 1 minute
+
+CPU load was generated with:
+
+```bash
+stress-ng --cpu 2 --timeout 180s
+```
+
+The alert fired and later changed to **Resolved**.
+
+### Learned
+
+* Metrics provide numerical measurements of resource conditions.
+* Alerts can detect when a metric crosses a defined threshold.
+* Alert history can be used to confirm that the condition occurred.
+
+---
+
+## 2. VM Stopped
+
+Stopped the VM:
+
+```bash
+az vm stop \
+  --resource-group "$RG" \
+  --name "$VM"
+```
+
+Checked the power state:
+
+```bash
+az vm get-instance-view \
+  --resource-group "$RG" \
+  --name "$VM" \
+  --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus" \
+  -o tsv
+```
+
+Result:
+
+```text
+VM stopped
+```
+
+The VM was then started again.
+
+### Learned
+
+`az vm stop` powers off the VM but does not deallocate it.
+
+For this scenario, the important point was identifying the VM's actual power state during troubleshooting.
+
+---
+
+## 3. Website Inaccessible
+
+The application VM used Nginx.
+
+Checked the service:
+
+```bash
+sudo systemctl status nginx --no-pager
+```
+
+Tested HTTP connectivity:
+
+```bash
+curl -I --connect-timeout 5 http://$VM_IP
+```
+
+Result:
+
+```text
+HTTP/1.1 200 OK
+```
+
+Also checked:
+
+* VM power state
+* Public IP
+* Private IP
+* Nginx service
+* NSG rules
+* HTTP port 80
+
+### Learned
+
+A website problem should not immediately be assumed to be an application problem.
+
+A basic troubleshooting order is:
+
+```text
+VM state
+↓
+Service
+↓
+IP address
+↓
+Network Security Group
+↓
+Port / connectivity
+```
+
+---
+
+## 4. NSG Blocking Traffic
+
+Created an intentional deny rule for HTTP:
+
+```bash
+az network nsg rule create \
+  --resource-group "$RG" \
+  --nsg-name "lab10-vmNSG" \
+  --name "block-port-80" \
+  --priority 900 \
+  --direction Inbound \
+  --access Deny \
+  --protocol Tcp \
+  --destination-port-ranges 80
+```
+
+Tested HTTP:
+
+```bash
+curl -I --connect-timeout 5 http://$VM_IP
+```
+
+Result:
+
+```text
+Connection timed out
+```
+
+The NSG rule had priority `900`, which was evaluated before the existing HTTP allow rule with priority `1001`.
+
+The deny rule was then deleted and HTTP connectivity was restored.
+
+### Learned
+
+NSG rules are evaluated by priority.
+
+**Lower priority number = evaluated first.**
+
+---
+
+# 5. Application ↔ Database Communication Failure
+
+Created a second VM:
+
+```text
+DB VM
+lab10-db-vm
+10.10.0.5
+```
+
+Installed Docker and PostgreSQL 16.
+
+PostgreSQL container:
+
+```bash
+sudo docker run -d \
+  --name lab10-postgres \
+  -e POSTGRES_PASSWORD=Lab10Pass123! \
+  -e POSTGRES_DB=lab10db \
+  -p 5432:5432 \
+  postgres:16
+```
+
+Verified the container:
+
+```bash
+sudo docker ps
+```
+
+The application VM tested connectivity to PostgreSQL:
+
+```bash
+nc -zv -w 5 10.10.0.5 5432
+```
+
+Initially:
+
+```text
+Connection to 10.10.0.5 5432 port [tcp/postgresql] succeeded!
+```
+
+### Intentional Failure
+
+The DB VM's NSG initially had only an explicit SSH allow rule.
+
+Communication between the two VMs was possible because they were in the same VNet and Azure's default `AllowVNetInBound` rule permits VNet traffic.
+
+An intentional deny rule was then created:
+
+```bash
+az network nsg rule create \
+  --resource-group "$RG" \
+  --nsg-name "lab10-db-vmNSG" \
+  --name "block-postgres-5432" \
+  --priority 900 \
+  --direction Inbound \
+  --access Deny \
+  --protocol Tcp \
+  --source-address-prefixes 10.10.0.4 \
+  --destination-port-ranges 5432
+```
+
+The connection test then failed:
+
+```text
+nc: connect to 10.10.0.5 port 5432 timed out
+```
+
+The NSG rules confirmed:
+
+```text
+block-postgres-5432
+Priority: 900
+Source: 10.10.0.4
+Access: Deny
+Protocol: Tcp
+Destination Port: 5432
+```
+
+The deny rule was deleted:
+
+```bash
+az network nsg rule delete \
+  --resource-group "$RG" \
+  --nsg-name "lab10-db-vmNSG" \
+  --name "block-postgres-5432"
+```
+
+Connectivity was restored:
+
+```text
+Connection to 10.10.0.5 5432 port [tcp/postgresql] succeeded!
+```
+
+### Learned
+
+`5432` is the standard TCP port used by PostgreSQL.
+
+The troubleshooting process demonstrated:
+
+```text
+Application → DB failure
+        ↓
+Check IP / destination
+        ↓
+Check TCP connectivity
+        ↓
+Check NSG
+        ↓
+Identify blocking rule
+        ↓
+Remove blocking rule
+        ↓
+Confirm connectivity restored
+```
+
+This demonstrated the difference between:
+
+* Azure NSG network filtering
+* VM networking
+* Docker port mapping
+* PostgreSQL service
+
+---
+
+# Key Takeaways
+
+### Metrics vs Logs
+
+* **Metrics** → numerical measurements such as CPU usage
+* **Logs** → detailed event and system information
+* **Alerts** → actions triggered when a condition is met
+* **KQL** → language used to query Log Analytics data
+
+### Network Troubleshooting
+
+When an application cannot communicate with another service:
+
+```text
+IP / hostname
+↓
+Network connectivity
+↓
+NSG
+↓
+Port
+↓
+Service
+↓
+Authentication
+↓
+Database / application
+```
+
+The lab showed that a connection failure can occur even when the application and database themselves are running correctly.
+
+---
+
+## Lab 10 Status
+
+**Completed**
+
+Completed scenarios:
+
+* [x] CPU usage alert
+* [x] VM stopped detection
+* [x] Website troubleshooting
+* [x] NSG traffic blocking
+* [x] Application ↔ Database communication troubleshooting
+
+The main objective of Lab 10 was achieved: **monitoring an Azure environment and using a structured troubleshooting process to identify failures.**
