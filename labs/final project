@@ -1,0 +1,180 @@
+# Azure Final Project
+
+## Overview
+
+Built a small Azure infrastructure environment for a web application.
+
+### Architecture
+
+```text
+Internet
+   |
+   v
+Public Load Balancer
+   |
+   v
+Web VM (Linux)
+10.0.1.4
+   |
+   | TCP 3306
+   v
+DB VM (Linux + MySQL)
+10.0.2.4
+
+Web VM
+   |
+   | Private Endpoint
+   v
+Azure Blob Storage
+
+Administration:
+Azure Bastion
+   |
+   +--> Web VM
+   +--> DB VM
+
+Monitoring:
+Web VM + DB VM
+   |
+   v
+Azure Monitor Agent
+   |
+   v
+Data Collection Rule
+   |
+   v
+Log Analytics
+```
+
+## Azure Resources
+
+* Resource Group: `final-rg`
+* Region: `North Central US`
+* VNet: `final-vnet` (`10.0.0.0/16`)
+
+### Subnets
+
+| Subnet                  | Address       |
+| ----------------------- | ------------- |
+| web-subnet              | `10.0.1.0/24` |
+| db-subnet               | `10.0.2.0/24` |
+| private-endpoint-subnet | `10.0.3.0/24` |
+| AzureBastionSubnet      | `10.0.4.0/24` |
+
+## Network Security
+
+### Web NSG
+
+* TCP 80 from Internet
+* TCP 443 from Internet
+
+### DB NSG
+
+* TCP 3306 from `10.0.1.0/24`
+
+The VMs do not have public IP addresses.
+
+## Web Server
+
+* VM: `final-web-vm`
+* Ubuntu 22.04
+* Size: `Standard_B2ats_v2`
+* Private IP: `10.0.1.4`
+* Nginx installed
+* HTTP 80 configured
+* HTTPS 443 configured with a self-signed certificate
+
+A Standard Public Load Balancer was configured:
+
+* Load Balancer: `final-lb`
+* Public IP: `final-lb-pip`
+* HTTP and HTTPS rules
+* Health probes configured
+
+## Database Server
+
+* VM: `final-db-vm`
+* Ubuntu 22.04
+* Size: `Standard_B2ats_v2`
+* Private IP: `10.0.2.4`
+* MySQL installed
+
+Database:
+
+```text
+finaldb
+```
+
+User:
+
+```text
+webapp
+```
+
+Verified that the Web VM could connect to MySQL on the DB VM using TCP 3306.
+
+## Azure Blob Storage
+
+* Storage Account: `finallab1790309582`
+* Container: `appdata`
+* Public network access: Disabled
+* Private Endpoint: `final-storage-private-endpoint`
+* Private IP: `10.0.3.4`
+
+Configured:
+
+* Private DNS Zone
+* VNet link
+* DNS Zone Group
+* Managed Identity
+* Storage Blob Data Contributor role
+
+Verified that the Web VM could resolve the Storage endpoint to the private IP and upload a test blob using the Azure Storage REST API.
+
+## Azure Bastion
+
+* Bastion: `final-vnet-bastion`
+* Standard SKU
+
+Used Bastion to connect to the private DB VM through SSH.
+
+## Monitoring
+
+Created:
+
+* Log Analytics Workspace: `final-log-workspace`
+* Azure Monitor Agent on both VMs
+* Data Collection Rule: `final-dcr`
+
+Collected Linux performance data such as:
+
+* CPU
+* Memory
+
+Verified that performance data from both VMs was available in Log Analytics using KQL.
+
+## Cost
+
+Checked the actual cost in Azure Cost Analysis.
+
+Current recorded cost during the selected period:
+
+**CA$2.72**
+
+The largest cost was Azure Bastion.
+
+## Key Things Learned
+
+* Designing a VNet with separate Web, DB, Private Endpoint, and Bastion subnets
+* Using NSGs to control traffic between tiers
+* Hosting a web server on a private Linux VM behind a Load Balancer
+* Connecting a Web VM to a private MySQL server
+* Using Private Endpoint for Blob Storage
+* Using Managed Identity and RBAC instead of storage access keys
+* Using Azure Bastion for private VM administration
+* Collecting VM performance data with Azure Monitor and Log Analytics
+* Checking Azure resource costs with Cost Management
+
+## Status
+
+**Completed**
