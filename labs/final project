@@ -1,5 +1,62 @@
 # Azure Final Project
 
+### Requirements
+
+**1. Application**
+
+* Run a Web Application on a Linux VM.
+* The Web Application must be accessible from the Internet.
+* SSH access must not be directly exposed to the Internet.
+
+**2. Database**
+
+* The Database must be separated from the Application VM.
+* The Database must not be directly accessible from the Internet.
+* The Application must connect to the Database through a private network.
+
+**3. Storage**
+
+* The Application must be able to store files.
+* The Storage must not be directly accessible from the public Internet.
+* Private access must be used.
+
+**4. Network**
+
+* Use an Azure VNet.
+* Properly separate the Application, Database, Private Endpoints, and other network components as appropriate.
+* Allow only necessary traffic using NSGs.
+* SSH must be handled securely for administrative purposes.
+
+**5. Identity**
+
+* Follow the principle of least privilege when granting access to Azure resources.
+* When the Application accesses Azure Storage, use a Managed Identity whenever possible.
+* Do not grant unnecessary subscription-level permissions.
+
+**6. Monitoring**
+
+* Use Azure Monitor and/or Log Analytics.
+* Monitor the Application VM's health and status.
+* Monitor metrics such as CPU usage.
+* Collect sufficient information to investigate issues when failures occur.
+
+**7. Security**
+
+* Do not expose the Database or Storage to the public Internet.
+* Avoid unnecessary Public IP addresses.
+* Restrict unnecessary inbound traffic using NSGs.
+
+**8. Cost**
+
+* Use Azure for Students.
+* Avoid unnecessarily large VMs or SKUs.
+* Keep the design cost-conscious because this is a lab environment.
+
+
+
+
+
+
 ## Overview
 
 Built a small Azure infrastructure environment for a web application.
