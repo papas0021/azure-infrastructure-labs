@@ -1,0 +1,387 @@
+# Hyper-V Lab — ASP.NET Core Web App, IIS, SQL Server Authentication & Troubleshooting
+
+## 1. Project Overview
+
+### Objective
+
+Build and troubleshoot a small Windows-based infrastructure environment using Hyper-V, Active Directory, SQL Server Express, and an ASP.NET Core web application.
+
+The main learning goals were:
+
+- Deploy and test a web application.
+- Connect the web application to SQL Server.
+- Understand Windows Authentication and SQL Server permissions.
+- Troubleshoot administrative access to SQL Server.
+- Understand the difference between running an application with Kestrel and hosting it with IIS.
+- Verify network connectivity between virtual machines.
+
+## 2. Lab Architecture
+
+```text
+                    Hyper-V Host
+                         |
+             Lab-Internal Virtual Switch
+                         |
+        +----------------+----------------+
+        |                |                |
+      DC01             DEV01             SQL01
+        |                |                |
+   Active Directory   SSMS 22       SQL Server Express
+   DNS / DHCP / RRAS  Browser       ASP.NET Core App
+                                       |
+                                  WebAppDB
+                                       |
+                                  dbo.Employees
+```
+
+### Virtual machines
+
+| VM | Role |
+|---|---|
+| DC01 | Windows Server 2025, AD DS, DNS, DHCP, RRAS |
+| DEV01 | Domain-joined client, SSMS 22, browser |
+| SQL01 | Windows Server 2025, SQL Server 2025 Express, ASP.NET Core application |
+
+Domain: `DEV.LOCAL`
+
+SQL Server instance: `SQL01\SQLEXPRESS`
+
+SQL01 LAN IP: `192.168.50.20`
+
+Web application URL: `http://192.168.50.20:5000`
+
+The web application and SQL Server currently run on the same VM. This is a lab environment, not a fully separated three-tier production architecture.
+
+## 3. SQL Server and Database Setup
+
+### SQL Server
+
+- Product: SQL Server 2025 Express
+- Instance: `SQLEXPRESS`
+- Authentication mode: Windows Authentication only
+- TCP port: `1433`
+- SQL Server service: `MSSQL$SQLEXPRESS`
+
+### Database and table
+
+Database: `WebAppDB`
+
+Table: `dbo.Employees`
+
+| EmployeeID | Name | Department |
+|---|---|---|
+| 1 | Alice | IT |
+| 2 | Bob | Sales |
+| 3 | Charlie | Finance |
+
+The application queries this table and displays the employee records in an HTML table.
+
+## 4. ASP.NET Core Web Application
+
+### Project setup
+
+The project was created on SQL01 under:
+
+```text
+C:\WebApp\EmployeeWeb
+```
+
+The application was initialized using:
+
+```powershell
+dotnet new web -n EmployeeWeb
+```
+
+The `Microsoft.Data.SqlClient` package was added to connect to SQL Server.
+
+The application was implemented in `Program.cs` to:
+
+1. Accept an HTTP request.
+2. Open a SQL Server connection.
+3. Query `dbo.Employees`.
+4. Generate an HTML response containing the employee records.
+
+### Connection string
+
+The application used an integrated Windows Authentication connection string:
+
+```csharp
+"Server=localhost,1433;" +
+"Database=WebAppDB;" +
+"Integrated Security=True;" +
+"Encrypt=True;" +
+"TrustServerCertificate=True;";
+```
+
+`localhost` refers to SQL01 itself because the web application and SQL Server are running on the same machine.
+
+`TrustServerCertificate=True` is used for this lab to trust the server certificate without normal certificate-chain validation. Production environments should use an appropriately configured and validated certificate.
+
+### Starting the application
+
+The application was first tested locally:
+
+```powershell
+dotnet run --no-restore --urls http://localhost:5000
+```
+
+It was then configured to listen on network interfaces:
+
+```powershell
+dotnet run --no-restore --urls http://0.0.0.0:5000
+```
+
+Listening on `0.0.0.0` allows the application to accept connections through available IPv4 interfaces, subject to firewall rules.
+
+### Windows Firewall
+
+An inbound firewall rule was created on SQL01:
+
+```powershell
+New-NetFirewallRule -DisplayName "EmployeeWeb TCP 5000" -Direction Inbound -Protocol TCP -LocalPort 5000 -RemoteAddress 192.168.50.0/24 -Action Allow
+```
+
+This permits TCP port 5000 traffic from the lab subnet.
+
+### Verification
+
+From DEV01, the following URL was opened in a browser:
+
+```text
+http://192.168.50.20:5000
+```
+
+**Verified result:** The Employee Directory page displayed Alice, Bob, and Charlie from `WebAppDB`.
+
+This confirmed the basic end-to-end HTTP request and database read path.
+
+## 5. IIS and Kestrel
+
+ASP.NET Core applications can be hosted using Kestrel directly or hosted behind IIS.
+
+### Kestrel test
+
+The verified hosting method in this lab was:
+
+```powershell
+dotnet run --no-restore --urls http://0.0.0.0:5000
+```
+
+This starts the application using the .NET development workflow and Kestrel.
+
+### IIS concepts investigated
+
+The lab also involved investigating IIS and the ASP.NET Core Hosting Bundle/module.
+
+Relevant components:
+
+- **IIS:** Windows web server.
+- **Kestrel:** ASP.NET Core web server.
+- **ASP.NET Core Module V2:** IIS module used to host or forward requests to an ASP.NET Core application.
+- **Hosting Bundle:** Installs the ASP.NET Core runtime and IIS integration components needed for IIS hosting.
+
+### Verification status
+
+The IIS components and hosting approach were investigated, but successful IIS hosting was not confirmed in the recorded tests.
+
+The next IIS milestone is to publish the application, configure an IIS site and application pool, and verify the site from DEV01 without manually running `dotnet run`.
+
+## 6. Authentication and Authorization Troubleshooting
+
+### Problem 1: Windows Administrator was not a SQL Server sysadmin
+
+**Symptom**
+
+The Windows domain account `DEV\Administrator` could not initially be used as a SQL Server administrator.
+
+**Root cause**
+
+Windows/Active Directory administrative privileges and SQL Server administrative privileges are separate.
+
+Being a Windows administrator does not automatically make an account a member of the SQL Server `sysadmin` role.
+
+### Recovery procedure used in the lab
+
+On SQL01, SQL Server Configuration Manager was used to add this startup parameter to the `SQLEXPRESS` service:
+
+```text
+-mSQLCMD
+```
+
+The existing startup parameters were retained. The SQL Server service was restarted.
+
+Then, from a command-line session on SQL01, the following connection command was used:
+
+```powershell
+sqlcmd -S "localhost\SQLEXPRESS" -E -C
+```
+
+Meaning:
+
+- `-S`: Specifies the SQL Server instance.
+- `-E`: Uses Windows Authentication.
+- `-C`: Trusts the server certificate.
+
+Inside `sqlcmd`, the following SQL was executed:
+
+```sql
+IF SUSER_ID(N'DEV\Administrator') IS NULL
+    CREATE LOGIN [DEV\Administrator] FROM WINDOWS;
+ALTER SERVER ROLE [sysadmin] ADD MEMBER [DEV\Administrator];
+GO
+```
+
+Afterward, the `-mSQLCMD` startup parameter was removed and SQL Server was restarted in normal mode.
+
+**Important:** Single-user mode is a recovery technique, not the normal method for granting permissions. Access recovery depends on the account and SQL Server configuration meeting the necessary conditions.
+
+### Normal administrative workflow
+
+When a working SQL Server administrator is available, permissions can normally be managed directly from SSMS.
+
+For example, after confirming that the login does not already exist:
+
+```sql
+CREATE LOGIN [DEV\Administrator] FROM WINDOWS;
+GO
+
+ALTER SERVER ROLE [sysadmin]
+ADD MEMBER [DEV\Administrator];
+GO
+```
+
+These statements must be executed by an appropriately authorized SQL Server administrator.
+
+### Problem 2: Developer permissions differed from administrator permissions
+
+The domain account `DEV\developer01` was associated with the `DEV\SQLDevelopers` group.
+
+The developer account had `db_datareader` access to `WebAppDB` according to the recorded setup.
+
+This allows data reading, but it does not automatically allow INSERT, UPDATE, or DELETE operations.
+
+A useful permission check is:
+
+```sql
+USE WebAppDB;
+GO
+
+SELECT
+    SUSER_SNAME() AS LoginName,
+    USER_NAME() AS DatabaseUser,
+    IS_MEMBER('db_datareader') AS IsDataReader,
+    IS_MEMBER('db_datawriter') AS IsDataWriter;
+GO
+```
+
+Run this query while connected as the account whose permissions need to be checked.
+
+A result of `1` means membership is present; `0` means it is not present.
+
+### Key distinction
+
+| Item | Purpose |
+|---|---|
+| Active Directory user/group | Windows identity management |
+| SQL Server login | Allows an identity to authenticate to SQL Server |
+| Database user | Maps an identity to a database |
+| `db_datareader` | Read data from user tables and views |
+| `db_datawriter` | Insert, update, and delete data in user tables |
+| `sysadmin` | Instance-wide SQL Server administration |
+
+`db_datawriter` does not automatically grant permission to create or alter database objects.
+
+## 7. Important Authentication Finding: Web App Identity
+
+The application's connection string contains:
+
+```csharp
+Integrated Security=True;
+```
+
+This means SQL Server uses the Windows identity under which the application process runs.
+
+It does **not** automatically use the identity of the person who opened the application in a browser on DEV01.
+
+For example, if the application is running as a Windows account that lacks access to `WebAppDB`, SQL queries can fail even if the user accessing the web page has database permissions.
+
+The identity used by the application depends on the hosting configuration:
+
+- When running directly with `dotnet run`, it uses the Windows identity associated with that application process.
+- When hosted through IIS, the identity and SQL Server access depend on the IIS application pool identity and any explicitly configured credentials or delegation.
+
+This is an important distinction between authenticating a browser user to a website and authenticating the application process to SQL Server.
+
+For production deployments, use a dedicated service identity with the minimum database permissions required.
+
+## 8. Network Troubleshooting
+
+### Verified network path
+
+```text
+DEV01 Browser
+    |
+    | HTTP / TCP 5000
+    v
+SQL01 ASP.NET Core Application
+    |
+    | SQL Server connection / TCP 1433
+    v
+SQL01 SQL Server Express
+    |
+    v
+WebAppDB.dbo.Employees
+```
+
+The web application connects to SQL Server through `localhost,1433`, so the database connection is local to SQL01.
+
+The firewall rule permits incoming connections to TCP 5000 from the lab subnet.
+
+### Troubleshooting order
+
+If DEV01 cannot load the website:
+
+1. Confirm the application is running on SQL01.
+2. Confirm the application is listening on the expected port.
+3. Check SQL01's firewall rule.
+4. Check IP connectivity between DEV01 and SQL01.
+5. Test the HTTP endpoint from DEV01.
+6. If the page loads but the database query fails, investigate the SQL Server service, connection string, login, database permissions, and application process identity.
+
+This separates network issues from application and database authentication issues.
+
+## 9. Final Results
+
+### Completed and verified
+
+- Configured the Hyper-V lab with DC01, DEV01, and SQL01.
+- Installed SQL Server Express and configured the `SQLEXPRESS` instance.
+- Created `WebAppDB` and populated `dbo.Employees`.
+- Created an ASP.NET Core application using .NET.
+- Configured SQL Server connectivity using Windows Authentication.
+- Investigated and recovered SQL Server administrative access using Single-user mode and `sqlcmd`.
+- Configured an inbound firewall rule for the web application.
+- Successfully accessed the Employee Directory from DEV01.
+- Verified that the application displayed database records.
+
+### Not yet verified
+
+- Successful production-style IIS hosting.
+- SQL write operations through the application.
+- Full least-privilege validation for all AD users and groups.
+- Dedicated application service identity for database access.
+- Separate web and database servers.
+
+## 10. Lessons Learned
+
+1. Windows administrator privileges and SQL Server `sysadmin` privileges are different.
+2. SQL Server logins, database users, and database roles serve different purposes.
+3. Single-user mode is mainly a recovery mechanism; normal permission changes should be made through an authorized SSMS session.
+4. `Integrated Security=True` authenticates the application process to SQL Server, not automatically the browser user.
+5. A successful browser request does not prove that IIS hosting is configured correctly.
+6. Network connectivity, web server availability, SQL Server connectivity, and database authorization should be tested as separate layers.
+7. A reliable server build should include verification of administrative access and recovery procedures, not just installation and service startup.
+
+### Next Step
+
+Publish the application and complete IIS hosting on SQL01. Then verify the IIS application pool identity and its minimum required SQL Server permissions, and document one controlled authentication failure and its resolution.
