@@ -1,0 +1,158 @@
+# IIS Windows Authentication and SQL Server Authorization Lab
+
+## Overview
+
+In this lab, I configured an ASP.NET Core web application hosted on IIS and integrated it with Active Directory and SQL Server.
+
+The goal was to control who could view employee records and who could update employee information using AD security groups and SQL Server permissions.
+
+## Environment
+
+- **Domain:** `DEV.LOCAL`
+- **Domain Controller:** `DC01`
+- **Web Application / IIS:** `SQL01`
+- **Database:** SQL Server Express
+- **Database Name:** `WebAppDB`
+- **Application:** `EmployeeWeb`
+- **URL:** `http://localhost:8080`
+- **Application Pool:** `EmployeeWebPool`
+- **Application Pool Identity:** `DEV\svc_employeeweb`
+- **Framework:** ASP.NET Core / .NET 10
+
+## Architecture
+
+The application uses three separate security layers:
+
+1. **Windows Authentication:** IIS authenticates domain users.
+2. **Application Authorization:** ASP.NET Core checks AD group membership.
+3. **Database Permissions:** SQL Server controls which operations the application service account can perform.
+
+The application uses `DEV\svc_employeeweb` to connect to SQL Server through Windows Integrated Authentication.
+
+The requesting user and the SQL Server connection identity have different responsibilities.
+
+## Tasks Completed
+
+### 1. Configured IIS and Windows Authentication
+
+- Hosted the ASP.NET Core application on IIS.
+- Configured the `EmployeeWeb` site to use port `8080`.
+- Configured the application pool to run under `DEV\svc_employeeweb`.
+- Configured the application to use IIS Windows Authentication integration.
+
+### 2. Implemented AD Group-Based Authorization
+
+Created and used two AD security groups:
+
+- `DEV\WebAppReaders`
+- `DEV\WebAppEditors`
+
+Implemented authorization checks in `Program.cs`.
+
+**GET endpoint — Employee Directory**
+- Members of `WebAppReaders` or `WebAppEditors` can view employee records.
+- Users who do not belong to either group are denied access.
+
+**POST endpoint — Update Department**
+- Only members of `WebAppEditors` can update an employee's department.
+- Other authenticated users are denied the operation.
+
+### 3. Connected the Application to SQL Server
+
+Configured the application to connect to `WebAppDB` using Windows Integrated Authentication.
+
+The application reads employee records from `dbo.Employees` and supports updating the `Department` column.
+
+Used parameterized SQL commands for the update operation.
+
+### 4. Applied Least-Privilege Database Permissions
+
+Investigated the SQL Server permissions assigned to `DEV\svc_employeeweb`.
+
+Verified that the account could read employee records but did not initially have the required update permission.
+
+Granted column-level UPDATE permission on `dbo.Employees.Department`:
+
+```sql
+GRANT UPDATE (Department)
+ON OBJECT::dbo.Employees
+TO [DEV\svc_employeeweb];
+```
+
+Verified the effective column-level permission using `HAS_PERMS_BY_NAME`.
+
+This allowed the application to update the required column without granting unrestricted table-level UPDATE permission.
+
+## Troubleshooting
+
+### Issue 1: HTTP 401.2
+
+**Symptom:** The application returned HTTP 401.2 when accessed as `DEV\Administrator`.
+
+**Investigation:** Reviewed the relationship between IIS Windows Authentication and application-level authorization.
+
+**Outcome:** Added `DEV\Administrator` to `WebAppReaders`, after which the Employee Directory was accessible.
+
+**Lesson learned:** IIS authentication and application authorization are separate stages. The exact root cause of the original 401.2 was not conclusively established.
+
+### Issue 2: Reader Accessed the Application but Could Not Update Records
+
+**Symptom:** `DEV\testdev` received HTTP 403 when attempting to update an employee's department.
+
+**Investigation:** Reviewed the authorization logic in `Program.cs`.
+
+**Outcome:** Confirmed that the application denied the update because the user was not a member of `WebAppEditors`.
+
+**Lesson learned:** Being able to view data does not automatically grant permission to modify it.
+
+### Issue 3: Editor Received HTTP 500 During an Update
+
+**Symptom:** `DEV\testdev2` could access the application but received HTTP 500 when attempting to update a record.
+
+**Investigation:**
+- Checked SQL Server permissions for `DEV\svc_employeeweb`.
+- Confirmed that SELECT was allowed.
+- Found that the required column-level UPDATE permission was missing.
+- Granted UPDATE permission on the `Department` column.
+
+**Outcome:** The POST request returned HTTP 200 after the permission change.
+
+**Lesson learned:** Application-level authorization and database permissions must both allow the requested operation.
+
+## Validation Results
+
+| Test | Expected Result | Actual Result |
+|---|---|---|
+| Reader opens Employee Directory | Allowed | Passed |
+| Reader attempts department update | HTTP 403 | Passed |
+| Editor updates department | HTTP 200 | Passed |
+| Verify updated database record | Department changed | Passed |
+| SQL account reads employee records | Allowed | Passed |
+| SQL account updates Department column | Allowed after permission change | Passed |
+
+Final database verification:
+
+- EmployeeID: `1`
+- EmployeeName: `Alice`
+- Department: `LabTest`
+
+Confirmed that the change was persisted in SQL Server.
+
+## Key Takeaways
+
+- Understood the difference between authentication and authorization.
+- Practiced IIS Windows Authentication with Active Directory domain users.
+- Implemented role-based access control using AD security groups.
+- Learned how IIS application pool identities affect SQL Server connections.
+- Troubleshot HTTP 401.2, 403, and 500 errors.
+- Applied least-privilege SQL permissions.
+- Verified application behavior through HTTP responses and direct database queries.
+
+## Future Improvements
+
+- Configure HTTPS and review secure IIS bindings.
+- Review CSRF protection for state-changing POST requests.
+- Improve error handling and avoid exposing internal exception details.
+- Test authorization with additional users and group memberships.
+- Review application logging and auditing.
+- Consider separating the web application and SQL Server onto different VMs.
