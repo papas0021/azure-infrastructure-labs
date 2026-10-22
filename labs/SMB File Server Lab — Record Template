@@ -1,0 +1,28 @@
+SMB File Server Lab — Record Template
+GitHub の Markdown ファイルなどに保存できる形式
+
+1. Objective（目的）
+AD セキュリティグループを利用して、SMB ファイル共有へのアクセスを制御する。
+2. Architecture（構成）
+- DC01：AD DS / DNS
+- SQL01：SMB File Server
+- DEV01：クライアント
+- Share path：\\SQL01\LabShare
+- Local path：C:\Shares\LabShare
+3. Configuration（設定）
+Group	NTFS permission	Share permission
+Storage-Read	Read	Read
+Storage-Modify	Modify	Change
+管理者と SYSTEM の権限は維持する。
+4. Validation（検証結果）
+- testdev：共有を開ける。フォルダー作成は拒否された。
+- testdev2：フォルダーとファイルの作成・編集・削除ができた。
+5. Troubleshooting（調査記録）
+- 発見した問題：親フォルダーから SQL01\Users の権限が継承されていた。
+- 調査：Advanced Security Settings で継承元を確認した。
+- 対応：LabShare の継承された権限を明示的な権限に変換し、SQL01\Users のエントリを削除した。
+- 結果：ユーザーごとのアクセスをテストして期待どおりの動作を確認した。
+6. Lessons Learned（学んだこと）
+- Share Permissions と NTFS Permissions は別々に評価される。
+- ユーザーのグループ所属と継承された権限を確認する必要がある。
+- 設定後は、異なる権限のユーザーで実際にテストする。
