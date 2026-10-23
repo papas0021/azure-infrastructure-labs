@@ -1,0 +1,110 @@
+1. Your understanding, step by step
+Step 1 — Task Scheduler runs the PowerShell script
+
+You assign an account to the WebAppDB Daily Backup task. Task Scheduler uses that account's security context to run PowerShell, which launches sqlcmd.
+
+Your understanding: Correct.
+
+
+
+Step 2 — sqlcmd executes the backup instructions
+
+Your PowerShell script runs sqlcmd, which reads the .sql file containing the BACKUP DATABASE command.
+
+For example:
+BACKUP DATABASE [WebAppDB]
+TO DISK = N'C:\Shares\LabShare\SQLBackups\WebAppDB.bak'
+WITH INIT, CHECKSUM, STATS = 10;
+
+
+Your understanding: Correct.
+
+One distinction: sqlcmd sends the command to SQL Server. SQL Server performs the actual database backup.
+
+
+
+Step 3 — SQL Server authenticates the account
+
+Your script uses sqlcmd -E, which means Windows Authentication. SQL Server identifies the Windows account used by the process and checks its SQL Server login and permissions.
+
+If that account can connect to the instance and has permission to back up WebAppDB, the command can proceed.
+
+Your understanding: Mostly correct.
+
+Creating a login and database user is one way to grant access, but the account also needs the appropriate database-level permissions. A database user alone does not automatically grant backup permission.
+
+
+
+Step 4 — SQL Server writes the backup file
+
+You granted Modify permission on the backup folder to the SQL Server service account:
+
+NT SERVICE\MSSQL$SQLEXPRESS
+
+SQL Server uses its own service identity to write the .bak file. This is separate from the account Task Scheduler uses to launch sqlcmd.
+
+Your understanding: Correct.
+
+
+
+Step 5 — Manually test the backup process
+
+You manually executed the backup command to verify that SQL Server could create the file at the intended destination.
+
+Your understanding: Correct.
+
+This was an important troubleshooting step: it helped distinguish SQL permissions, file-system permissions, and Task Scheduler execution problems.
+
+
+
+2. Your architecture, from beginning to end
+Here is how the components work together.
+Task Scheduler
+
+Runs under the configured Windows security context
+
+PowerShell → sqlcmd -E
+
+Runs the script and connects using Windows Authentication
+
+SQL Server Express
+
+Authenticates the login, checks permissions, and executes BACKUP DATABASE
+
+WebAppDB.bak
+
+SQL Server's service account writes the backup file
+
+
+3. Why did we manually run the backup first?
+You asked whether the purpose was to verify that the process was working correctly.
+
+Yes — exactly. This is a form of isolating variables during troubleshooting.
+
+Imagine the scheduled backup fails. Several things could be wrong:
+- Task Scheduler cannot launch the script.
+- PowerShell cannot find or execute sqlcmd.
+- SQL Server rejects the Windows login or denies backup permission.
+- SQL Server cannot write to the destination folder.
+- The backup command itself fails.
+By manually running the SQL backup first, you verify that the SQL Server backup operation and destination can work independently of the scheduling mechanism.
+
+Then, when you run the PowerShell script through Task Scheduler, you test the additional automation layer.
+
+One important qualification: a successful manual backup does not prove that the scheduled task uses the same account or has the same permissions. That's why we investigated the task configuration separately.
+4. What have you actually verified?
+Based on the results you've shared:
+Test	Status
+SQL Server can back up WebAppDB	Confirmed by successful backup output
+SQL Server can write to the target .bak path	Confirmed by successful backup and file existence
+The backup file was updated	Confirmed by the newer timestamp
+The scheduled PowerShell script has completed a successful backup	Supported by the successful log you shared
+The backup can restore the database successfully	Not yet tested
+Daily automation works while nobody is logged in	Not yet verified
+
+The last two points matter in production. A backup file existing is not the same as proving that it can be restored, and a successful run while logged in does not prove that unattended scheduling works.
+5. One final concept to remember
+You are working with two different security boundaries:
+- Windows and Task Scheduler: Who is allowed to run the script and connect to SQL Server?
+- SQL Server and NTFS: Is that login allowed to back up the database, and can the SQL Server service write the resulting file?
+Understanding the difference is a real infrastructure skill. It applies well beyond this lab—to Windows services, scheduled jobs, IIS application pools, SMB shares, and automated maintenance tasks.
