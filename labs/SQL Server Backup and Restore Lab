@@ -1,0 +1,46 @@
+# SQL Server Backup and Restore Lab
+
+## Objective
+Create a backup of `WebAppDB`, verify the backup, restore it as a separate database, and validate the restored data without overwriting the original database.
+
+## Environment
+- Windows Server
+- SQL Server Express (`SQLEXPRESS`)
+- PowerShell and `sqlcmd`
+- Task Scheduler
+- Original database: `WebAppDB`
+
+## Backup Location
+`C:\Shares\LabShare\SQLBackups\WebAppDB.bak`
+
+## Tasks Completed
+1. Created a SQL Server database backup.
+2. Configured a scheduled task named `WebAppDB Daily Backup`.
+3. Verified the backup using `RESTORE VERIFYONLY WITH CHECKSUM`.
+4. Inspected the logical file names using `RESTORE FILELISTONLY`.
+5. Restored the backup as `WebAppDB_RestoreTest` using `RESTORE DATABASE WITH MOVE`.
+6. Confirmed that both databases were `ONLINE`.
+7. Queried the restored `Employees` table and verified the three records.
+
+## Validation Results
+- Backup verification succeeded.
+- Database restoration succeeded.
+- The restored database contained the expected `Employees` table and records.
+- The original `WebAppDB` remained online and was not overwritten.
+
+## Troubleshooting
+Encountered SQL Server error 916 because the Windows principal used during a scheduled backup could not access `WebAppDB`. Investigated the scheduled task's execution identity and adjusted the task configuration. A subsequent backup succeeded.
+
+## Key Learnings
+- Difference between backup verification and an actual restore test.
+- SQL Server Windows authentication and database permissions.
+- Scheduled PowerShell tasks for SQL Server Express backups.
+- Logical versus physical database file names.
+- Safe restore testing using a separate database name.
+- Importance of validating restored data, not just checking whether the database is online.
+
+## Next Steps
+- Confirm future scheduled backup executions.
+- Document the final task identity and permissions.
+- Consider a dedicated least-privilege account for production-style automation.
+- Practice recovery from a simulated failure.
