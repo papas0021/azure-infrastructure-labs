@@ -1,0 +1,175 @@
+# Windows Server Infrastructure Lab – IIS, SQL Server, AD Authorization, and File Backups
+
+## 1. Overview
+
+This lab focused on building and validating a Windows Server infrastructure environment using Active Directory, IIS, ASP.NET Core, SQL Server Express, and SMB file sharing.
+
+The main goal was to practice role-based access control, web application deployment, database integration, and backup operations while keeping the Production and Staging environments separate.
+
+## 2. Environment
+
+| Component | Configuration |
+|---|---|
+| Domain | `DEV.LOCAL` |
+| Domain Controller | `DC01` |
+| Web and SQL Server | `SQL01` |
+| Client machine | `DEV01` |
+| Web server | IIS |
+| Application | ASP.NET Core EmployeeWeb |
+| Database server | SQL Server Express |
+| SQL instance | `SQL01\SQLEXPRESS` |
+| Production database | `WebAppDB` |
+| Staging database | `WebAppDB_Staging` |
+| File server path | `C:\Shares\LabShare` |
+
+## 3. Production and Staging
+
+I maintained separate application directories and database connection strings for Production and Staging.
+
+| Item | Production | Staging |
+|---|---|---|
+| IIS site | `EmployeeWeb` | `EmployeeWebStaging` |
+| Application pool | Existing Production pool | `EmployeeWebStagingPool` |
+| Application directory | `C:\WebApp\Production` | `C:\WebApp\Staging` |
+| Source directory | `C:\WebApp\EmployeeWeb` | `C:\WebApp\EmployeeWeb-Staging` |
+| Database | `WebAppDB` | `WebAppDB_Staging` |
+
+The Staging application was built and published using the .NET CLI.
+
+Published output:
+`C:\WebApp\Publish-StagingDB`
+
+Before deployment, I created a backup of the existing Staging directory:
+
+`C:\WebApp\Staging-backup-20261026-160641`
+
+I stopped the Staging application pool, copied the published files into the Staging directory, and restarted the application pool.
+
+I verified that the Staging website and its application pool returned to the `Started` state. I also accessed the application through `http://localhost:8081`.
+
+Production was not intentionally modified during this deployment.
+
+## 4. Active Directory Role-Based Access Control
+
+I implemented and tested different permissions for existing Active Directory groups.
+
+| AD group | Intended permissions | Test result |
+|---|---|---|
+| `DEV\WebAppReaders` | View the employee directory only | Passed |
+| `DEV\WebAppEditors` | View employees and update department information | Passed |
+| `DEV\WebAppAdmins` | View employees and execute database backups, but not edit departments | Passed |
+
+The department update feature restricts available values to:
+
+- `IT`
+- `Sales`
+- `Finance`
+
+The Staging application validates submitted department values and uses a parameterized SQL update.
+
+The department update endpoint also includes an authorization check and anti-forgery validation.
+
+## 5. Database Integration and Testing
+
+The Staging application uses the following connection string database setting:
+
+`Database=WebAppDB_Staging;`
+
+The Production application source uses:
+
+`Database=WebAppDB;`
+
+I tested the department update feature from `DEV01` using `testdev2`, a member of the Editor group.
+
+I then verified that the updated department information was visible from a separate session using `testdev`.
+
+This confirmed that the Staging application could update database records and that another session could observe the change.
+
+I also inspected both source files to confirm that Production and Staging specify different databases.
+
+Note: This verified the configured database separation. A direct comparison of Production and Staging records was not performed as part of the final check.
+
+## 6. Database Backup
+
+I implemented and tested a backup operation restricted to `DEV\WebAppAdmins`.
+
+The Staging backup configuration uses:
+
+- Database: `WebAppDB_Staging`
+- Destination: `C:\Shares\LabShare\SQLBackups`
+- File naming format: `WebAppDB_Staging_YYYYMMDD_HHMMSS.bak`
+
+I signed in with an Admin account and successfully executed the backup through the Staging web application.
+
+I then checked the destination directory in File Explorer and confirmed that a `.bak` file had been created.
+
+The Admin account was also tested to ensure it could not update employee department information.
+
+## 7. SMB File Sharing
+
+The lab also included an SMB file share on SQL01.
+
+Root path:
+
+`C:\Shares\LabShare`
+
+Subdirectories:
+
+- `AppFiles`
+- `SQLBackups`
+
+The share and NTFS permissions were configured to support different access levels for the existing storage groups.
+
+The storage access tests confirmed that the read-only test account could browse the share but could not create folders, while the modify test account could create, edit, and delete files.
+
+The end-to-end AppFiles workflow through the Staging web application was not fully revalidated during the final deployment session.
+
+## 8. Security and Deployment Practices
+
+During this lab, I practiced the following operational procedures:
+
+- Separating Production and Staging application directories.
+- Using different database connection strings for each environment.
+- Backing up the current Staging directory before deployment.
+- Stopping only the Staging application pool during deployment.
+- Preserving the existing Production application during Staging changes.
+- Restricting application operations using Active Directory group membership.
+- Validating input before updating database records.
+- Using anti-forgery validation for state-changing HTTP requests.
+- Verifying backup file creation after a successful backup operation.
+
+## 9. Results
+
+The following items were successfully verified:
+
+- Staging application deployment and IIS startup.
+- Staging website accessibility on port `8081`.
+- Reader access restrictions.
+- Editor department updates.
+- Admin restrictions on department updates.
+- Admin-triggered database backup.
+- Creation of a `.bak` backup file.
+- Separate Production and Staging database settings.
+
+## 10. Future Improvements
+
+Potential next steps include:
+
+- Validate the Production and Staging data independently with read-only SQL queries.
+- Complete end-to-end testing of AppFiles through the web application.
+- Verify backup integrity using SQL Server `RESTORE VERIFYONLY`.
+- Document a recovery procedure for restoring the Staging database.
+- Build a similar multi-tier architecture in Microsoft Azure using Azure Bastion, Azure Load Balancer, private endpoints, and appropriate network security rules.
+
+## Skills Practiced
+
+- Windows Server administration
+- Active Directory and group-based authorization
+- IIS website and application pool management
+- ASP.NET Core deployment
+- SQL Server Express integration
+- SQL database backup operations
+- SMB share and NTFS permissions
+- Production and Staging separation
+- Deployment backup and recovery planning
+- Infrastructure troubleshooting and validation
